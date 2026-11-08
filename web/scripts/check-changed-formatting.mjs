@@ -4,6 +4,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as prettier from "prettier";
 
+function isPrettierSyntaxError(error) {
+    return error?.name === "SyntaxError";
+}
+
 export async function checkChangedFormatting({ cwd = process.cwd(), baseSha = process.env.BASE_SHA, headSha = process.env.GITHUB_SHA || "HEAD", log = console.log } = {}) {
     const git = (args) => {
         const result = spawnSync("git", args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
@@ -36,13 +40,25 @@ export async function checkChangedFormatting({ cwd = process.cwd(), baseSha = pr
         const info = await prettier.getFileInfo(filepath, { ignorePath: path.join(cwd, ".prettierignore") });
         if (info.ignored) continue;
         const options = { ...(await prettier.resolveConfig(filepath)), filepath };
-        // 只允许明确的历史格式问题跳过；语法、Git、文件读取错误全部向上抛出。
         const previous = previousFiles.has(file) ? git(["show", `${base}:${prefix}${file}`]) : null;
-        if (previous !== null && !(await prettier.check(previous, options))) {
-            log(`Skipping legacy unformatted file: ${file}`);
-            continue;
+        const current = await readFile(filepath, "utf8");
+        if (previous !== null) {
+            try {
+                if (!(await prettier.check(previous, options))) {
+                    log(`Skipping legacy unformatted file: ${file}`);
+                    continue;
+                }
+            } catch (error) {
+                if (!isPrettierSyntaxError(error)) throw error;
+                // A repair commit must be able to fix a malformed base file. The current file
+                // is still parsed below; Git and file-reading errors still throw. Keep the
+                // historical formatting exemption because this file was not format-clean before.
+                log(`Skipping legacy syntax-invalid file: ${file}`);
+                await prettier.format(current, options);
+                continue;
+            }
         }
-        if (!(await prettier.check(await readFile(filepath, "utf8"), options))) failures.push(file);
+        if (!(await prettier.check(current, options))) failures.push(file);
     }
     if (failures.length) throw new Error(`Code style issues found:\n${failures.join("\n")}\nRun Prettier with --write to fix.`);
     log("Changed web files passed formatting checks.");

@@ -63,12 +63,17 @@ describe("changed-file formatting gate", () => {
         await repo.check();
     });
 
-    test("syntax errors are failures, not legacy-format skips", async () => {
-        const repo = fixture({ "broken.ts": "const value = ;\n" });
-        repo.write("broken.ts", "const value = 1;\n");
+    test("allows repairing a legacy syntax error while rejecting current syntax errors", async () => {
+        const repo = fixture({ "broken.css": "@layer utilities {\n    .value {\n        color: red;\n    }\n" });
+        repo.write("broken.css", "@layer utilities {\n.value { color: red; }\n}\n");
         repo.commit();
-        await expect(repo.check()).rejects.toThrow();
-        expect(repo.messages).toEqual([]);
+        await repo.check();
+        expect(repo.messages).toContain("Skipping legacy syntax-invalid file: broken.css");
+
+        const invalid = fixture({ "broken.css": "@layer utilities {\n  .value {\n    color: red;\n  }\n}\n" });
+        invalid.write("broken.css", "@layer utilities {\n    .value {\n        color: red;\n    }\n");
+        invalid.commit();
+        await expect(invalid.check()).rejects.toThrow("Unclosed block");
     });
 
     test("unavailable explicit base SHA falls back to the head parent", async () => {
