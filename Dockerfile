@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
 # 构建 Vite 前端产物。
-FROM --platform=$BUILDPLATFORM oven/bun:1.3.9 AS web-build
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.2 AS web-build
 
 WORKDIR /app/web
 COPY web/package.json web/bun.lock ./

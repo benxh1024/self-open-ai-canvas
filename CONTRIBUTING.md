@@ -22,7 +22,7 @@
 
 检查命令以 `.github/workflows/quality.yml` 为准。`bun run build` 只做类型检查和打包，不会运行 lint、单元测试或浏览器 E2E；不能用构建成功代替 Web checks 通过。
 
-- 前端使用 Bun 1.3.9 和 `bun install --frozen-lockfile`，执行 `bun run typecheck`、`bun run lint`、`bun run test`、`bun run test:previs:e2e`（均在 `web/` 下）。E2E 需要 Chrome/Chromium，可用 `CHROME_BIN` 指定。改动文件另做 Prettier 检查；CI 用 `web/scripts/check-changed-formatting.mjs` 检查提交差异。
+- 前端使用 Bun 1.4.2 和 `bun install --frozen-lockfile`，执行 `bun run typecheck`、`bun run lint`、`bun run test`、`bun run test:previs:e2e`（均在 `web/` 下）。E2E 需要 Chrome/Chromium，可用 `CHROME_BIN` 指定。改动文件另做 Prettier 检查；CI 用 `web/scripts/check-changed-formatting.mjs` 检查提交差异。
 - 后端在 `backend/` 下运行 `gofmt -l .` 并修复列出的文件，再运行 `go test -json -timeout=20m ./...`。完整测试需要 Node 22.19.0、`backend/agent-runtime/pi/` 中的 `npm ci --omit=dev --ignore-scripts`、`redis-server` 和独立的 PostgreSQL 测试库；连接通过 `CANVAS_TEST_POSTGRES_DSN` 提供。缺少服务导致用例跳过时，不能声称与 Backend checks 等价。
 - CSS、组件结构、路由或协议变动时，同时核对相邻回归测试。测试应表达当前约定；不要为了通过旧断言恢复已修复的行为，也不要直接跳过失败用例。
 - 合并、解决冲突或同步主干后，针对最终代码重新验证。先确认 `git status` 无未解决冲突、`git diff --check` 通过，再查看该提交的 CI 结果；旧提交的成功不能代表新提交通过。
