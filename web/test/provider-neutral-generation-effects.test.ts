@@ -128,7 +128,9 @@ describe("生成副作用跨标签租约", () => {
         try {
             const realm = harness.createRealm();
             await realm.invoke("initialize", { browserLocks: false, required: true });
-            await expect(realm.invoke("claim", "materialize:no-lock:0", "no-lock")).rejects.toThrow("跨页面生成副作用互斥");
+            const blocked = await realm.invoke("claim", "materialize:no-lock:0", "no-lock").catch((error: unknown) => error);
+            expect(blocked).toBeInstanceOf(Error);
+            expect((blocked as Error).message).toBe("当前浏览器不支持跨页面生成副作用互斥");
             expect(harness.storageReads).toBe(0);
         } finally {
             harness.dispose();
@@ -144,7 +146,8 @@ describe("生成副作用跨标签租约", () => {
             expect(owner.status).toBe("claimed");
             if (owner.status !== "claimed") throw new Error("Expected a claimed lease");
             await realm.invoke("complete", "materialize:fallback:0", "fallback", {}, owner.binding);
-            await expect(realm.invoke("claim", "materialize:fallback:0", "fallback")).resolves.toEqual({ status: "completed", result: {} });
+            const completed = await realm.invoke("claim", "materialize:fallback:0", "fallback");
+            expect(completed).toEqual({ status: "completed", result: {} });
             expect(harness.lockRequests).toBe(0);
         } finally {
             harness.dispose();
