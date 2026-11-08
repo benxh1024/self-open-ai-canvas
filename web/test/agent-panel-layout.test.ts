@@ -108,7 +108,7 @@ describe("Agent error semantics", () => {
         expect(agentSubmissionErrorTitle(new ApiError("参数错误", { status: 400 }), false)).toBe("请求已被服务端拒绝");
         expect(agentSubmissionErrorTitle(new TypeError("network failed"), false, false)).toBe("消息尚未发送，输入已保留");
         expect(agentSubmissionErrorTitle(new TypeError("network failed"), false)).toBe("未收到服务端确认；重试将核对原请求，不重复创建");
-        expect(agentSubmissionErrorTitle(new TypeError("preflight failed"), false, false)).toBe("提交前准备未完成，请检查网络后重试");
+        expect(agentSubmissionErrorTitle(new TypeError("preflight failed"), false, false)).toBe("消息尚未发送，输入已保留");
         expect(agentSubmissionErrorTitle(undefined, true)).toBe("运行已接收，但本地提交记录清理失败");
     });
 });

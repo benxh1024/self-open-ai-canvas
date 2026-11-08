@@ -32,7 +32,6 @@ export function agentSubmissionErrorTitle(cause: unknown, accepted: boolean, req
     if (!requestSent) return "消息尚未发送，输入已保留";
     const status = cause instanceof ApiError ? cause.status : undefined;
     if (status && [400, 401, 403, 404, 422].includes(status)) return "请求已被服务端拒绝";
-    if (!requestSent) return status ? "提交前检查未完成" : "提交前准备未完成，请检查网络后重试";
     if (status) return "服务端已返回错误；重试将核对原请求，不重复创建";
     return "未收到服务端确认；重试将核对原请求，不重复创建";
 }
