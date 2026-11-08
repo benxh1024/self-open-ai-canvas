@@ -44,11 +44,11 @@ export const AIMessageMarkdown = memo(function AIMessageMarkdown({ children, isS
     return (
         <Streamdown
             className={`ai-message-markdown ${isStreaming ? "ai-message-markdown-streaming" : ""} ${className}`.trim()}
-            mode="streaming"
+            mode={isStreaming ? "streaming" : "static"}
             dir="auto"
             isAnimating={isStreaming}
             animated={isStreaming && streamingAnimation !== "none" ? { animation: "fadeIn", duration: streamingAnimation === "char" ? 120 : 140, sep: streamingAnimation, stagger: streamingAnimation === "char" ? 16 : 8 } : false}
-            parseIncompleteMarkdown
+            parseIncompleteMarkdown={isStreaming}
             skipHtml
             lineNumbers={false}
             components={components ? { ...(isStreaming ? streamingComponents : staticComponents), ...components } : isStreaming ? streamingComponents : staticComponents}
