@@ -155,7 +155,7 @@ docker compose --env-file .env \
 Pull Request
   -> quality.yml：质量检查，不发布可部署镜像
 
-push main / push v* tag / 手动触发
+push v* tag / 手动触发
   -> publish-images.yml
      -> 调用 quality.yml
      -> 构建并推送不可变 SHA 镜像
@@ -165,7 +165,7 @@ push main / push v* tag / 手动触发
 
 `quality.yml` 是可复用质量门禁，检查 Agent 域静态约束、完整后端 Go 测试、PostgreSQL/Redis 依赖测试、支付插件多架构 smoke、前端类型检查、lint、单元测试和 Chrome E2E。PR 连续推送时会取消过期检查；发布工作流调用时使用独立并发组，不会取消已经开始的发布。
 
-`publish-images.yml` 在 `main`、`v*` tag 或手动触发时运行。它构建并发布：
+`publish-images.yml` 在 `v*` tag 或手动触发时运行。它构建并发布：
 
 | 镜像 | Dockerfile | 目标架构 |
 | --- | --- | --- |
@@ -173,7 +173,7 @@ push main / push v* tag / 手动触发
 | `open-ai-canvas-backend` | `backend/Dockerfile` | amd64、arm64，分别在原生 Runner 构建 |
 | `open-ai-canvas-yingce-agent` | `yingce-agent/Dockerfile` | amd64、arm64 |
 
-构建阶段先推送不可变 `sha-<完整提交>-<架构>` 镜像，并记录各镜像 digest。全部质量检查成功后，才创建多架构 manifest 并推广 `sha-<完整提交>`、短 SHA、`main` 上的 `latest` 或版本 tag。服务器部署最终把镜像固定为 `@sha256:...`，不长期依赖可变 tag。
+构建阶段先推送不可变 `sha-<完整提交>-<架构>` 镜像，并记录各镜像 digest。全部质量检查成功后，才创建多架构 manifest 并推广 `sha-<完整提交>`、短 SHA 和版本 tag；手动在 `main` 上运行时也可推广 `latest`。服务器部署最终把镜像固定为 `@sha256:...`，不长期依赖可变 tag。
 
 推送 `v*` tag 时，发布 job 还会交叉编译 `open-ai-canvas-host-updater-linux-amd64` 和 `open-ai-canvas-host-updater-linux-arm64`，生成 `SHA256SUMS`，并把它们连同 `docker-compose.deploy.yml` 上传到 GitHub Release。
 
