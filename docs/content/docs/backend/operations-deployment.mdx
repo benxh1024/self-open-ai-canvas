@@ -132,6 +132,40 @@ CANVAS_REGISTRATION_ENABLED=false
 
 `CANVAS_PUBLIC_BASE_URL` 是后端为外部模型签发本地存储资源短期地址时使用的公网根地址，不应包含 `/api`。它不能替代 HTTPS 反向代理，也不会放宽出站 SSRF 限制。
 
+### 复用已有 PostgreSQL 和 Redis
+
+如果服务器或本地 Docker 主机已经运行 PostgreSQL、Redis，可以使用仓库提供的
+`docker-compose.external-services.yml`。它只启动迁移、Agent、backend 和 web，不会创建
+新的 PostgreSQL/Redis 容器：
+
+```bash
+cp .env.example .env
+# 编辑 .env，至少填写以下值：
+# CANVAS_BACKEND_IMAGE、CANVAS_WEB_IMAGE、CANVAS_YINGCE_AGENT_IMAGE
+# DATABASE_URL、REDIS_URL、YINGCE_AGENT_TOKEN
+docker compose --env-file .env -f docker-compose.external-services.yml up -d
+```
+
+发布镜像的版本标签不带 `v` 前缀，例如 Release `v1.2.3` 对应：
+
+```dotenv
+CANVAS_BACKEND_IMAGE=ghcr.io/benxh1024/self-open-ai-canvas-backend:1.2.3
+CANVAS_WEB_IMAGE=ghcr.io/benxh1024/self-open-ai-canvas-web:1.2.3
+CANVAS_YINGCE_AGENT_IMAGE=ghcr.io/benxh1024/self-open-ai-canvas-yingce-agent:1.2.3
+DATABASE_URL=postgresql://user:password@host.docker.internal:5432/open_ai_canvas?sslmode=disable
+REDIS_URL=redis://:password@host.docker.internal:6379/0
+YINGCE_AGENT_TOKEN=请替换为至少32个字符的随机值
+```
+
+容器中的 `127.0.0.1` 指向容器自身，不能用来访问宿主机数据库。Linux Docker 使用
+`host.docker.internal` 时，需要让 PostgreSQL 监听 Docker 网桥可达的地址，并在
+`pg_hba.conf` 和 Redis 防火墙/ACL 中只放行必要的 Docker 网段；不要为了接入而公开
+数据库端口。若 PostgreSQL/Redis 在另一台机器上，直接把连接串中的主机名换成内网地址。
+
+这个外部服务编排不会启动 Host Updater。因为更新器的备份/恢复流程依赖 Compose 内的
+`postgres` 服务，使用外部数据库时请手动备份数据库并按 Release 更新镜像、执行迁移，
+不要把 `docker-compose.deploy.yml` 和本文件混用。
+
 生产应由宿主机反向代理终止 TLS，并正确传递 `X-Forwarded-Proto` 与 `X-Forwarded-Host`。首次管理员注册应在受控网络完成，之后关闭公开注册。
 
 ### 源码服务器部署
