@@ -64,6 +64,22 @@ test("renders an agent node link as a titled inline node card", () => {
     expect(visibleText).not.toContain("video-1790385749473-q4157");
 });
 
+test("renders the node card when an embedded window has no usable matchMedia", () => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+    Object.defineProperty(globalThis, "window", {
+        configurable: true,
+        value: { matchMedia: true, addEventListener() {}, removeEventListener() {} },
+    });
+    try {
+        const html = renderToStaticMarkup(<AgentChatMessage item={assistantMessage("新节点 ID：video-1790385749473-q4157")} theme={canvasThemes.dark} references={[videoReference]} onFocusNode={() => {}} />);
+        expect(html).toContain('class="agent-message-node-link"');
+        expect(html).toContain("片头镜头");
+    } finally {
+        if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+        else Reflect.deleteProperty(globalThis, "window");
+    }
+});
+
 test("renders the image-to-previs user request with the existing canvas node card", () => {
     const imageReference = { ...videoReference, kind: "image" as const, sourceType: "image" as const, label: "道姑", title: "道姑" };
     const html = renderToStaticMarkup(

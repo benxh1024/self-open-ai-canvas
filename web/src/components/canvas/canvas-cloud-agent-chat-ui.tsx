@@ -2,7 +2,7 @@ import { agentCanvasActions, agentCanvasActionLabel } from "@/lib/canvas/agent-c
 import { Button } from "antd";
 import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode, type SyntheticEvent } from "react";
 
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
 import { Check, CheckCircle2, ChevronDown, ChevronUp, CircleAlert, CircleDot, Copy, CornerUpLeft, HelpCircle, ListChecks, LoaderCircle, RotateCcw, Undo2, XCircle, Blocks, FoldVertical, Info } from "lucide-react";
 import { agentCopyText } from "@/lib/canvas/agent-composer-attachments";
 import type { CloudAgentInterjectionState } from "@/services/cloud-agent-conversations";
@@ -449,7 +449,7 @@ export const AgentChatMessage = memo(function AgentChatMessage({
     replyOptionsDisabled?: boolean;
 }) {
     const isUser = item.role === "user";
-    const reducedMotion = useReducedMotion();
+    const reducedMotion = useSafeReducedMotion();
     const isSystem = item.role === "system";
     const displayedText = useTypewriterText(item.text, item.role === "assistant" && isStreaming);
     const formAnswer = item.formAnswer ?? (isUser ? parseCloudAgentFormAnswer(item.text) : undefined);
@@ -678,6 +678,30 @@ function AgentMessageCopyButton({ text, align }: { text: string; align: "start" 
 }
 
 const EMPTY_REFERENCES: CanvasResourceReference[] = [];
+
+function useSafeReducedMotion() {
+    const [reducedMotion, setReducedMotion] = useState(false);
+
+    useEffect(() => {
+        if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+
+        let media: MediaQueryList;
+        try {
+            media = window.matchMedia("(prefers-reduced-motion: reduce)");
+        } catch {
+            return;
+        }
+
+        const update = () => setReducedMotion(Boolean(media.matches));
+        update();
+        if (typeof media.addEventListener === "function") media.addEventListener("change", update);
+        return () => {
+            if (typeof media.removeEventListener === "function") media.removeEventListener("change", update);
+        };
+    }, []);
+
+    return reducedMotion;
+}
 
 function agentInterjectionLabel(state: CloudAgentInterjectionState) {
     switch (state) {
@@ -1110,7 +1134,7 @@ export const AgentOperationFeed = memo(function AgentOperationFeed({
     live?: boolean;
 }) {
     const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
-    const reducedMotion = useReducedMotion();
+    const reducedMotion = useSafeReducedMotion();
     const listId = useId();
     const latest = items[items.length - 1];
     if (!latest) return null;
