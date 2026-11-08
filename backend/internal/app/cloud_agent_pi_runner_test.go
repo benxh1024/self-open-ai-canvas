@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"infinite-canvas/backend/internal/model"
+	"yingce/backend/internal/model"
 )
 
 func TestStartCloudAgentPiDoesNotRestartAnActiveRunner(t *testing.T) {
@@ -41,8 +41,12 @@ func TestCloudAgentPiPermissionsUseCanvasProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	permissions := s.buildPermissionsConfig("user", "agent-canvas")
-	for _, key := range []string{"canWriteCanvas", "canDeleteNodes", "canCreateNodes", "canMoveNodes", "canDuplicateNodes", "canManageRelations", "canInviteUsers"} {
+	permissions := s.buildPermissionsConfig("user", CloudAgentRequest{
+		CanvasID:       "agent-canvas",
+		PermissionMode: "auto",
+		ContextScope:   []string{"canvas"},
+	})
+	for _, key := range []string{"canWriteCanvas", "canCreateNodes", "canMoveNodes", "canManageRelations"} {
 		allowed, ok := permissions[key].(bool)
 		if !ok || !allowed {
 			t.Fatalf("owner permission %s = %v; want true", key, permissions[key])
