@@ -1,17 +1,6 @@
 # 使用宿主机或外部网络中的 PostgreSQL、Redis。
 # 与 docker-compose.deploy.yml 不同，本文件不会启动 postgres/redis 容器。
 services:
-  migrate:
-    image: ${CANVAS_BACKEND_IMAGE:?请先配置 CANVAS_BACKEND_IMAGE}
-    entrypoint: ["migrate-schema"]
-    command: ["up"]
-    environment:
-      CANVAS_BACKEND_DATA_DIR: /data
-      CANVAS_DATABASE_DRIVER: postgres
-      DATABASE_URL: ${DATABASE_URL:?请先配置外部 PostgreSQL 的 DATABASE_URL}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
   yingce-agent:
     image: ${CANVAS_YINGCE_AGENT_IMAGE:?请先配置 CANVAS_YINGCE_AGENT_IMAGE}
     environment:
@@ -54,8 +43,6 @@ services:
     volumes:
       - ${CANVAS_DATA_PATH:-backend-data}:/data
     depends_on:
-      migrate:
-        condition: service_completed_successfully
       yingce-agent:
         condition: service_healthy
     restart: unless-stopped

@@ -60,22 +60,22 @@ jobs:
       matrix:
         include:
           # Web 的构建阶段固定 BUILDPLATFORM，静态文件只编译一次。
-          - image: open-ai-canvas-web
+          - image: self-open-ai-canvas-web
             dockerfile: Dockerfile
             arch: multi
             platforms: linux/amd64,linux/arm64
             runner: ubuntu-24.04
-          - image: open-ai-canvas-backend
+          - image: self-open-ai-canvas-backend
             dockerfile: backend/Dockerfile
             arch: amd64
             platforms: linux/amd64
             runner: ubuntu-24.04
-          - image: open-ai-canvas-backend
+          - image: self-open-ai-canvas-backend
             dockerfile: backend/Dockerfile
             arch: arm64
             platforms: linux/arm64
             runner: ubuntu-24.04-arm
-          - image: open-ai-canvas-yingce-agent
+          - image: self-open-ai-canvas-yingce-agent
             dockerfile: yingce-agent/Dockerfile
             arch: multi
             platforms: linux/amd64,linux/arm64

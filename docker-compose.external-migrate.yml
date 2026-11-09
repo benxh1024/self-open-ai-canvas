@@ -1,0 +1,14 @@
+# 外部 PostgreSQL 的显式迁移任务。
+# 主应用 docker-compose.external-services.yml 不包含 migrate，避免普通 up 误触发数据库变更。
+services:
+  migrate:
+    profiles: ["migration"]
+    image: ${CANVAS_BACKEND_IMAGE:?请先配置 CANVAS_BACKEND_IMAGE}
+    entrypoint: ["migrate-schema"]
+    command: ["up"]
+    environment:
+      CANVAS_BACKEND_DATA_DIR: /data
+      CANVAS_DATABASE_DRIVER: postgres
+      DATABASE_URL: ${DATABASE_URL:?请先配置外部 PostgreSQL 的 DATABASE_URL}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

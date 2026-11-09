@@ -135,16 +135,32 @@ CANVAS_REGISTRATION_ENABLED=false
 ### 复用已有 PostgreSQL 和 Redis
 
 如果服务器或本地 Docker 主机已经运行 PostgreSQL、Redis，可以使用仓库提供的
-`docker-compose.external-services.yml`。它只启动迁移、Agent、backend 和 web，不会创建
-新的 PostgreSQL/Redis 容器：
+`docker-compose.external-services.yml`。它只启动 Agent、backend 和 web，不会创建新的
+PostgreSQL/Redis 容器，也不会在普通启动时自动执行数据库迁移：
 
 ```bash
 cp .env.example .env
 # 编辑 .env，至少填写以下值：
 # CANVAS_BACKEND_IMAGE、CANVAS_WEB_IMAGE、CANVAS_YINGCE_AGENT_IMAGE
 # DATABASE_URL、REDIS_URL、YINGCE_AGENT_TOKEN
+```
+
+首次安装或升级前，必须显式执行目标 Backend 镜像中的迁移任务：
+
+```bash
+docker compose --env-file .env \
+  -f docker-compose.external-migrate.yml \
+  run --rm migrate
+```
+
+迁移成功后，再启动应用编排：
+
+```bash
 docker compose --env-file .env -f docker-compose.external-services.yml up -d
 ```
+
+迁移失败时不要启动目标版本；先保留上述命令的终端输出，修复数据库连接、权限或迁移
+问题后重新执行迁移命令。由于命令使用 `--rm`，成功或失败的迁移容器都会自动清理。
 
 发布镜像的版本标签不带 `v` 前缀，例如 Release `v1.2.3` 对应：
 
@@ -163,8 +179,9 @@ YINGCE_AGENT_TOKEN=请替换为至少32个字符的随机值
 数据库端口。若 PostgreSQL/Redis 在另一台机器上，直接把连接串中的主机名换成内网地址。
 
 这个外部服务编排不会启动 Host Updater。因为更新器的备份/恢复流程依赖 Compose 内的
-`postgres` 服务，使用外部数据库时请手动备份数据库并按 Release 更新镜像、执行迁移，
-不要把 `docker-compose.deploy.yml` 和本文件混用。
+`postgres` 服务，使用外部数据库时请手动备份数据库，并在升级前先更新 `.env` 中的
+Backend 镜像、运行 `docker-compose.external-migrate.yml`，再启动应用服务。不要把
+`docker-compose.deploy.yml` 和本文件混用。
 
 生产应由宿主机反向代理终止 TLS，并正确传递 `X-Forwarded-Proto` 与 `X-Forwarded-Host`。首次管理员注册应在受控网络完成，之后关闭公开注册。
 
