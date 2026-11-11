@@ -14,6 +14,9 @@ services:
       retries: 10
       start_period: 10s
     restart: unless-stopped
+    networks:
+      - db-common-network
+      - open-ai-network
 
   backend:
     image: ${CANVAS_BACKEND_IMAGE:?请先配置 CANVAS_BACKEND_IMAGE}
@@ -40,11 +43,13 @@ services:
       CANVAS_LOG_LEVEL: ${CANVAS_LOG_LEVEL:-info}
       CANVAS_LOG_FORMAT: ${CANVAS_LOG_FORMAT:-text}
       GIN_MODE: release
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+
     volumes:
-      - ${CANVAS_DATA_PATH:-backend-data}:/data
+      - ${CANVAS_DATA_PATH:./backend-data}:/data
       - ${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}:/run/open-ai-canvas-updater
+    networks:
+      - db-common-network
+      - open-ai-network
     depends_on:
       yingce-agent:
         condition: service_healthy
@@ -56,12 +61,20 @@ services:
     ports:
       - "${CANVAS_HTTP_PORT:-3000}:3000"
     volumes:
-      - ${CANVAS_WEB_DATA_PATH:-web-data}:/usr/share/nginx/html
+      - ${CANVAS_WEB_DATA_PATH:./web-data}:/usr/share/nginx/html
     depends_on:
       backend:
         condition: service_healthy
     restart: unless-stopped
+    
+    networks:
+      - db-common-network
+      - open-ai-network
 
-volumes:
-  backend-data:
-  web-data:
+
+networks:
+  db-common-network:
+    external: true
+
+  open-ai-network:
+    driver: bridge

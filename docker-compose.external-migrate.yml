@@ -8,8 +8,9 @@ services:
     image: postgres:17-alpine
     environment:
       DATABASE_URL: ${DATABASE_URL:?请先配置外部 PostgreSQL 的 DATABASE_URL}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    networks:
+      - db-common-network
+      - open-ai-network
 
   migrate:
     profiles: ["migration"]
@@ -20,5 +21,13 @@ services:
       CANVAS_BACKEND_DATA_DIR: /data
       CANVAS_DATABASE_DRIVER: postgres
       DATABASE_URL: ${DATABASE_URL:?请先配置外部 PostgreSQL 的 DATABASE_URL}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    networks:
+      - db-common-network
+      - open-ai-network
+
+networks:
+  db-common-network:
+    external: true
+
+  open-ai-network:
+    driver: bridge
