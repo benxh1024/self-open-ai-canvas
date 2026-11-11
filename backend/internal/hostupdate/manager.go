@@ -21,32 +21,48 @@ import (
 
 const maxReleaseResponseBytes = 4 << 20
 
+type DatabaseMode string
+
+const (
+	DatabaseModeManaged  DatabaseMode = "managed"
+	DatabaseModeExternal DatabaseMode = "external"
+)
+
 type Config struct {
-	Repository   string
-	InstallDir   string
-	ComposeFile  string
-	EnvFile      string
-	StateDir     string
-	BackupDir    string
-	HealthURL    string
-	GitHubToken  string
-	StableWindow time.Duration
-	StepTimeout  time.Duration
-	BinaryPath   string
-	ServiceName  string
-	SelfUpdate   bool
+	Repository           string
+	ImageRepository      string
+	InstallDir           string
+	ComposeFile          string
+	MigrationComposeFile string
+	DatabaseMode         DatabaseMode
+	EnvFile              string
+	StateDir             string
+	BackupDir            string
+	HealthURL            string
+	GitHubToken          string
+	StableWindow         time.Duration
+	StepTimeout          time.Duration
+	BinaryPath           string
+	ServiceName          string
+	SelfUpdate           bool
 }
 
 type commandRunner interface {
 	Run(context.Context, string, []string, []string, io.Writer, io.Writer) error
+	RunInput(context.Context, string, []string, []string, io.Reader, io.Writer, io.Writer) error
 }
 
 type execRunner struct{ dir string }
 
 func (r execRunner) Run(ctx context.Context, name string, args, environment []string, stdout, stderr io.Writer) error {
+	return r.RunInput(ctx, name, args, environment, nil, stdout, stderr)
+}
+
+func (r execRunner) RunInput(ctx context.Context, name string, args, environment []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	command := exec.CommandContext(ctx, name, args...)
 	command.Dir = r.dir
 	command.Env = append(os.Environ(), environment...)
+	command.Stdin = stdin
 	command.Stdout = stdout
 	command.Stderr = stderr
 	return command.Run()
@@ -77,6 +93,20 @@ func NewManager(config Config) (*Manager, error) {
 	}
 	if config.ComposeFile == "" {
 		config.ComposeFile = "docker-compose.deploy.yml"
+	}
+	if config.MigrationComposeFile == "" {
+		config.MigrationComposeFile = config.ComposeFile
+	}
+	if config.DatabaseMode == "" {
+		config.DatabaseMode = DatabaseModeManaged
+	}
+	if config.DatabaseMode != DatabaseModeManaged && config.DatabaseMode != DatabaseModeExternal {
+		return nil, fmt.Errorf("不支持的数据库部署模式：%s", config.DatabaseMode)
+	}
+	config.ImageRepository = strings.TrimRight(strings.TrimSpace(config.ImageRepository), "/")
+	if config.ImageRepository == "" {
+		owner := strings.SplitN(config.Repository, "/", 2)[0]
+		config.ImageRepository = "ghcr.io/" + owner + "/self-open-ai-canvas"
 	}
 	if config.EnvFile == "" {
 		config.EnvFile = ".env"
@@ -236,9 +266,23 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 		return
 	}
 	defer os.Remove(nextCompose)
+	nextMigrationCompose, err := m.prepareTargetMigrationCompose(targetVersion)
+	if err != nil {
+		m.failWithoutRollback(PhaseFailed, err)
+		return
+	}
+	if nextMigrationCompose != nextCompose {
+		defer os.Remove(nextMigrationCompose)
+	}
 	if err := m.preflight(nextCompose, targetVersion); err != nil {
 		m.failWithoutRollback(PhaseFailed, err)
 		return
+	}
+	if nextMigrationCompose != nextCompose {
+		if err := m.preflightMigration(nextMigrationCompose, targetVersion); err != nil {
+			m.failWithoutRollback(PhaseFailed, err)
+			return
+		}
 	}
 	updaterBinary, err := m.prepareUpdaterBinary(targetVersion)
 	if err != nil {
@@ -250,7 +294,7 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 	}
 
 	m.setPhase(PhasePulling, "拉取目标版本镜像")
-	targetImages := immutableImageRefs(m.config.Repository, targetVersion)
+	targetImages := m.immutableImageRefs(targetVersion)
 	if err := m.composeWithImages(nextCompose, targetVersion, targetImages, m.config.StepTimeout, nil, "pull", "backend", "web", "yingce-agent"); err != nil {
 		m.failWithoutRollback(PhaseFailed, err)
 		return
@@ -259,6 +303,12 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 	if err != nil {
 		m.failWithoutRollback(PhaseFailed, err)
 		return
+	}
+	if m.config.DatabaseMode == DatabaseModeExternal {
+		if err := m.compose(m.migrationComposePath(), fromVersion, m.config.StepTimeout, nil, "pull", "db-tools"); err != nil {
+			m.failWithoutRollback(PhaseFailed, fmt.Errorf("准备外部 PostgreSQL 工具镜像：%w", err))
+			return
+		}
 	}
 
 	m.setPhase(PhaseDraining, "停止 Web、Backend 与 Agent，等待后台任务优雅退出")
@@ -278,6 +328,12 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 		m.failBeforeMigration(fmt.Errorf("保存旧 Compose 配置：%w", err), fromVersion)
 		return
 	}
+	if m.usesSeparateMigrationCompose() {
+		if err := replaceFile(m.migrationComposePath(), m.previousMigrationComposePath(), 0o600); err != nil {
+			m.failBeforeMigration(fmt.Errorf("保存旧迁移 Compose 配置：%w", err), fromVersion)
+			return
+		}
+	}
 	if err := replaceFile(m.envPath(), m.previousEnvPath(), 0o600); err != nil {
 		m.failBeforeMigration(fmt.Errorf("保存旧部署环境：%w", err), fromVersion)
 		return
@@ -289,7 +345,7 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 	m.mu.Unlock()
 
 	m.setPhase(PhaseMigrating, "执行目标版本数据库迁移")
-	if err := m.composeWithImages(nextCompose, targetVersion, targetImages, m.config.StepTimeout, nil, "run", "--rm", "migrate"); err != nil {
+	if err := m.composeWithImages(nextMigrationCompose, targetVersion, targetImages, m.config.StepTimeout, nil, "run", "--rm", "migrate"); err != nil {
 		m.failWithRollback(err, fromVersion, backup)
 		return
 	}
@@ -303,6 +359,13 @@ func (m *Manager) runUpdate(fromVersion, targetVersion string) {
 		_ = setEnvValue(m.envPath(), "CANVAS_IMAGE_TAG", strings.TrimPrefix(fromVersion, "v"))
 		m.failWithRollback(err, fromVersion, backup)
 		return
+	}
+	if nextMigrationCompose != nextCompose {
+		if err := replaceFile(nextMigrationCompose, m.migrationComposePath(), 0o600); err != nil {
+			_ = setEnvValue(m.envPath(), "CANVAS_IMAGE_TAG", strings.TrimPrefix(fromVersion, "v"))
+			m.failWithRollback(fmt.Errorf("切换迁移 Compose 配置：%w", err), fromVersion, backup)
+			return
+		}
 	}
 	if err := m.composeWithImages(m.composePath(), targetVersion, targetImages, m.config.StepTimeout, nil, "up", "-d", "--remove-orphans", "--wait", "--wait-timeout", "600"); err != nil {
 		m.failWithRollback(err, fromVersion, backup)
@@ -380,12 +443,19 @@ func (m *Manager) failWithRollback(cause error, targetVersion string, backup Bac
 
 func (m *Manager) runRollback(targetVersion string, backup Backup, automatic bool) {
 	var failures []error
-	if err := m.compose(m.composePath(), targetVersion, 5*time.Minute, nil, "stop", "web", "backend"); err != nil {
+	if err := m.compose(m.composePath(), targetVersion, 5*time.Minute, nil, "stop", "web", "backend", "yingce-agent"); err != nil {
 		failures = append(failures, err)
 	}
 	if _, err := os.Stat(m.previousComposePath()); err == nil {
 		if err := replaceFile(m.previousComposePath(), m.composePath(), 0o600); err != nil {
 			failures = append(failures, fmt.Errorf("恢复旧 Compose 配置：%w", err))
+		}
+	}
+	if m.usesSeparateMigrationCompose() {
+		if _, err := os.Stat(m.previousMigrationComposePath()); err == nil {
+			if err := replaceFile(m.previousMigrationComposePath(), m.migrationComposePath(), 0o600); err != nil {
+				failures = append(failures, fmt.Errorf("恢复旧迁移 Compose 配置：%w", err))
+			}
 		}
 	}
 	if _, err := os.Stat(m.previousEnvPath()); err == nil {
@@ -394,6 +464,9 @@ func (m *Manager) runRollback(targetVersion string, backup Backup, automatic boo
 		}
 	}
 	if err := m.restoreDatabase(backup); err != nil {
+		failures = append(failures, err)
+	}
+	if err := m.restoreBackendData(backup); err != nil {
 		failures = append(failures, err)
 	}
 	started := true
@@ -531,9 +604,26 @@ func (m *Manager) statePath() string { return filepath.Join(m.config.StateDir, "
 func (m *Manager) composePath() string {
 	return filepath.Join(m.config.InstallDir, m.config.ComposeFile)
 }
+func (m *Manager) migrationComposePath() string {
+	composeFile := m.config.MigrationComposeFile
+	if composeFile == "" {
+		composeFile = m.config.ComposeFile
+	}
+	return filepath.Join(m.config.InstallDir, composeFile)
+}
+func (m *Manager) usesSeparateMigrationCompose() bool {
+	migrationComposeFile := m.config.MigrationComposeFile
+	if migrationComposeFile == "" {
+		migrationComposeFile = m.config.ComposeFile
+	}
+	return migrationComposeFile != m.config.ComposeFile
+}
 func (m *Manager) envPath() string { return filepath.Join(m.config.InstallDir, m.config.EnvFile) }
 func (m *Manager) previousComposePath() string {
 	return filepath.Join(m.config.StateDir, "previous-compose.yml")
+}
+func (m *Manager) previousMigrationComposePath() string {
+	return filepath.Join(m.config.StateDir, "previous-migration-compose.yml")
 }
 func (m *Manager) previousEnvPath() string {
 	return filepath.Join(m.config.StateDir, "previous.env")

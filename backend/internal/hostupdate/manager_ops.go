@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -87,7 +86,18 @@ func (m *Manager) currentVersion() (string, error) {
 }
 
 func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
-	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", m.config.Repository, targetVersion, m.config.ComposeFile)
+	return m.prepareTargetComposeFile(targetVersion, m.config.ComposeFile)
+}
+
+func (m *Manager) prepareTargetMigrationCompose(targetVersion string) (string, error) {
+	if m.config.MigrationComposeFile == m.config.ComposeFile {
+		return m.prepareTargetCompose(targetVersion)
+	}
+	return m.prepareTargetComposeFile(targetVersion, m.config.MigrationComposeFile)
+}
+
+func (m *Manager) prepareTargetComposeFile(targetVersion, composeFile string) (string, error) {
+	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", m.config.Repository, targetVersion, composeFile)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -109,7 +119,8 @@ func (m *Manager) prepareTargetCompose(targetVersion string) (string, error) {
 	if len(data) == 0 {
 		return "", errors.New("目标 Compose 文件为空")
 	}
-	path := filepath.Join(m.config.StateDir, "compose-"+strings.TrimPrefix(targetVersion, "v")+".next.yml")
+	name := strings.NewReplacer("/", "-", "\\", "-", ".", "-").Replace(composeFile)
+	path := filepath.Join(m.config.StateDir, "compose-"+name+"-"+strings.TrimPrefix(targetVersion, "v")+".next.yml")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return "", fmt.Errorf("保存目标 Compose：%w", err)
 	}
@@ -134,7 +145,12 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 	if err := checkBackupDiskSpace(m.config.BackupDir); err != nil {
 		return err
 	}
-	if err := m.composeWithImages(composePath, targetVersion, immutableImageRefs(m.config.Repository, targetVersion), 2*time.Minute, nil, "config", "--quiet"); err != nil {
+	if m.config.DatabaseMode == DatabaseModeExternal {
+		if _, err := os.Stat(m.migrationComposePath()); err != nil {
+			return fmt.Errorf("读取当前迁移 Compose：%w", err)
+		}
+	}
+	if err := m.composeWithImages(composePath, targetVersion, m.immutableImageRefs(targetVersion), 2*time.Minute, nil, "config", "--quiet"); err != nil {
 		return fmt.Errorf("目标 Compose 校验失败：%w", err)
 	}
 	current, err := m.currentVersion()
@@ -143,6 +159,13 @@ func (m *Manager) preflight(composePath, targetVersion string) error {
 	}
 	if err := m.checkHealthOnce(m.healthURL(), current); err != nil {
 		return fmt.Errorf("当前运行版本与部署配置不一致或服务未就绪：%w", err)
+	}
+	return nil
+}
+
+func (m *Manager) preflightMigration(composePath, targetVersion string) error {
+	if err := m.composeWithImages(composePath, targetVersion, m.immutableImageRefs(targetVersion), 2*time.Minute, nil, "config", "--quiet"); err != nil {
+		return fmt.Errorf("目标迁移 Compose 校验失败：%w", err)
 	}
 	return nil
 }
@@ -250,21 +273,28 @@ type deploymentImages struct {
 	agent   string
 }
 
-func immutableImageRefs(repository, version string) deploymentImages {
-	owner := strings.SplitN(repository, "/", 2)[0]
+func (m *Manager) immutableImageRefs(version string) deploymentImages {
 	tag := strings.TrimPrefix(version, "v")
 	return deploymentImages{
-		backend: "ghcr.io/" + owner + "/open-ai-canvas-backend:" + tag,
-		web:     "ghcr.io/" + owner + "/open-ai-canvas-web:" + tag,
-		agent:   "ghcr.io/" + owner + "/open-ai-canvas-yingce-agent:" + tag,
+		backend: m.config.ImageRepository + "-backend:" + tag,
+		web:     m.config.ImageRepository + "-web:" + tag,
+		agent:   m.config.ImageRepository + "-yingce-agent:" + tag,
 	}
 }
 
 func (m *Manager) compose(composePath, imageTag string, timeout time.Duration, stdout io.Writer, arguments ...string) error {
-	return m.composeWithImages(composePath, imageTag, deploymentImages{}, timeout, stdout, arguments...)
+	return m.composeWithImagesInput(composePath, imageTag, deploymentImages{}, timeout, nil, stdout, arguments...)
 }
 
 func (m *Manager) composeWithImages(composePath, imageTag string, images deploymentImages, timeout time.Duration, stdout io.Writer, arguments ...string) error {
+	return m.composeWithImagesInput(composePath, imageTag, images, timeout, nil, stdout, arguments...)
+}
+
+func (m *Manager) composeWithInput(composePath, imageTag string, timeout time.Duration, input io.Reader, stdout io.Writer, arguments ...string) error {
+	return m.composeWithImagesInput(composePath, imageTag, deploymentImages{}, timeout, input, stdout, arguments...)
+}
+
+func (m *Manager) composeWithImagesInput(composePath, imageTag string, images deploymentImages, timeout time.Duration, input io.Reader, stdout io.Writer, arguments ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	envFile := m.envPath()
@@ -283,7 +313,7 @@ func (m *Manager) composeWithImages(composePath, imageTag string, images deploym
 		stdout = io.Discard
 	}
 	environment := []string{"CANVAS_IMAGE_TAG=" + strings.TrimPrefix(imageTag, "v")}
-	err := m.runner.Run(ctx, "docker", args, environment, stdout, &stderr)
+	err := m.runner.RunInput(ctx, "docker", args, environment, input, stdout, &stderr)
 	if err != nil {
 		message := strings.TrimSpace(stderr.String())
 		if len(message) > 1000 {
@@ -340,7 +370,7 @@ func (m *Manager) writeComposeEnvOverride(images deploymentImages) (string, erro
 }
 
 func (m *Manager) verifyImages(targetVersion string) (deploymentImages, error) {
-	images := immutableImageRefs(m.config.Repository, targetVersion)
+	images := m.immutableImageRefs(targetVersion)
 	refs := []string{images.backend, images.web, images.agent}
 	digests := make([]string, 0, len(refs))
 	for _, image := range refs {
@@ -429,13 +459,7 @@ func (m *Manager) createBackup(version string) (Backup, error) {
 	if err != nil {
 		return Backup{}, err
 	}
-	values, err := readEnvFile(m.envPath())
-	if err != nil {
-		return Backup{}, err
-	}
-	postgresUser := firstNonEmpty(values["POSTGRES_USER"], "open_ai_canvas")
-	postgresDB := firstNonEmpty(values["POSTGRES_DB"], "open_ai_canvas")
-	if err := m.compose(m.composePath(), version, m.config.StepTimeout, databaseEntry, "exec", "-T", "postgres", "pg_dump", "-U", postgresUser, "-d", postgresDB, "-Fc"); err != nil {
+	if err := m.backupDatabase(version, databaseEntry); err != nil {
 		return Backup{}, fmt.Errorf("备份 PostgreSQL：%w", err)
 	}
 	dataEntry, err := archive.CreateHeader(&zip.FileHeader{Name: "backend-data.tar", Method: zip.Store})
@@ -468,6 +492,24 @@ func (m *Manager) createBackup(version string) (Backup, error) {
 		return Backup{}, err
 	}
 	return Backup{ID: id, Path: path, Checksum: checksum, Size: stat.Size(), CreatedAt: now, Version: version}, nil
+}
+
+func (m *Manager) backupDatabase(version string, output io.Writer) error {
+	if m.config.DatabaseMode == DatabaseModeExternal {
+		return m.compose(
+			m.migrationComposePath(), version, m.config.StepTimeout, output,
+			"run", "--rm", "--no-deps", "--pull", "never", "-T",
+			"--entrypoint", "sh", "db-tools", "-ec",
+			`exec pg_dump --dbname="$DATABASE_URL" --format=custom`,
+		)
+	}
+	values, err := readEnvFile(m.envPath())
+	if err != nil {
+		return err
+	}
+	postgresUser := firstNonEmpty(values["POSTGRES_USER"], "open_ai_canvas")
+	postgresDB := firstNonEmpty(values["POSTGRES_DB"], "open_ai_canvas")
+	return m.compose(m.composePath(), version, m.config.StepTimeout, output, "exec", "-T", "postgres", "pg_dump", "-U", postgresUser, "-d", postgresDB, "-Fc")
 }
 
 func writeZipBytes(writer *zip.Writer, name string, data []byte) error {
@@ -539,6 +581,13 @@ func (m *Manager) restoreDatabase(backup Backup) error {
 		return err
 	}
 	defer reader.Close()
+	if m.config.DatabaseMode == DatabaseModeExternal {
+		return m.restoreExternalDatabase(backup.Version, reader)
+	}
+	return m.restoreManagedDatabase(backup.Version, reader)
+}
+
+func (m *Manager) restoreManagedDatabase(version string, input io.Reader) error {
 	values, err := readEnvFile(m.envPath())
 	if err != nil {
 		return err
@@ -548,40 +597,65 @@ func (m *Manager) restoreDatabase(backup Backup) error {
 	if postgresDB == "postgres" || strings.HasPrefix(postgresDB, "template") {
 		return fmt.Errorf("拒绝覆盖 PostgreSQL 系统数据库 %q", postgresDB)
 	}
-	if err := m.compose(m.composePath(), backup.Version, 5*time.Minute, nil, "exec", "-T", "postgres", "dropdb", "-U", postgresUser, "--if-exists", "--force", postgresDB); err != nil {
+	if err := m.compose(m.composePath(), version, 5*time.Minute, nil, "exec", "-T", "postgres", "dropdb", "-U", postgresUser, "--if-exists", "--force", postgresDB); err != nil {
 		return fmt.Errorf("删除待恢复数据库：%w", err)
 	}
-	if err := m.compose(m.composePath(), backup.Version, 5*time.Minute, nil, "exec", "-T", "postgres", "createdb", "-U", postgresUser, "-O", postgresUser, postgresDB); err != nil {
+	if err := m.compose(m.composePath(), version, 5*time.Minute, nil, "exec", "-T", "postgres", "createdb", "-U", postgresUser, "-O", postgresUser, postgresDB); err != nil {
 		return fmt.Errorf("重建待恢复数据库：%w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), m.config.StepTimeout)
-	defer cancel()
-	args := []string{"compose", "--env-file", m.envPath(), "-f", m.composePath(), "exec", "-T", "postgres", "pg_restore", "-U", postgresUser, "-d", postgresDB, "--no-owner", "--no-privileges"}
-	var stderr bytes.Buffer
-	command := execCommandWithInput{runner: m.runner, input: reader}
-	if err := command.Run(ctx, "docker", args, []string{"CANVAS_IMAGE_TAG=" + strings.TrimPrefix(backup.Version, "v")}, io.Discard, &stderr); err != nil {
-		return fmt.Errorf("恢复 PostgreSQL：%s", strings.TrimSpace(stderr.String()))
+	if err := m.composeWithInput(m.composePath(), version, m.config.StepTimeout, input, nil, "exec", "-T", "postgres", "pg_restore", "-U", postgresUser, "-d", postgresDB, "--no-owner", "--no-privileges"); err != nil {
+		return fmt.Errorf("恢复 PostgreSQL：%w", err)
 	}
 	return nil
 }
 
-type execCommandWithInput struct {
-	runner commandRunner
-	input  io.Reader
+func (m *Manager) restoreExternalDatabase(version string, input io.Reader) error {
+	if err := m.composeWithInput(
+		m.migrationComposePath(), version, m.config.StepTimeout, input, nil,
+		"run", "--rm", "--no-deps", "--pull", "never", "-T",
+		"--entrypoint", "sh", "db-tools", "-ec",
+		`exec pg_restore --clean --if-exists --no-owner --no-privileges --dbname="$DATABASE_URL"`,
+	); err != nil {
+		return fmt.Errorf("恢复外部 PostgreSQL：%w", err)
+	}
+	return nil
 }
 
-func (c execCommandWithInput) Run(ctx context.Context, name string, args, environment []string, stdout, stderr io.Writer) error {
-	runner, ok := c.runner.(execRunner)
-	if !ok {
-		return errors.New("当前命令执行器不支持标准输入")
+func (m *Manager) restoreBackendData(backup Backup) error {
+	if err := verifyZipBackup(backup.Path, backup.Checksum); err != nil {
+		return fmt.Errorf("拒绝恢复未通过校验的备份：%w", err)
 	}
-	command := exec.CommandContext(ctx, name, args...)
-	command.Dir = runner.dir
-	command.Env = append(os.Environ(), environment...)
-	command.Stdin = c.input
-	command.Stdout = stdout
-	command.Stderr = stderr
-	return command.Run()
+	archive, err := zip.OpenReader(backup.Path)
+	if err != nil {
+		return err
+	}
+	defer archive.Close()
+	var data *zip.File
+	for _, entry := range archive.File {
+		if entry.Name == "backend-data.tar" {
+			data = entry
+			break
+		}
+	}
+	if data == nil {
+		return errors.New("备份中不存在 backend-data.tar")
+	}
+	reader, err := data.Open()
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	// Keep the /data mount itself intact; it may be a named volume or a host path.
+	command := "find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && tar -C /data -xf -"
+	if err := m.composeWithInput(
+		m.composePath(), backup.Version, m.config.StepTimeout, reader, nil,
+		"run", "--rm", "--no-deps", "--pull", "never", "-T", "--user", "root",
+		"--entrypoint", "sh", "backend", "-ec", command,
+	); err != nil {
+		return fmt.Errorf("恢复后端数据目录：%w", err)
+	}
+	return nil
 }
 
 func (m *Manager) verifyHealthy(targetVersion string) error {

@@ -4,10 +4,17 @@ set -Eeuo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 REPOSITORY="${REPOSITORY:-benxh1024/self-open-ai-canvas}"
+DEPLOYMENT_MODE="${CANVAS_DEPLOYMENT_MODE:-managed}"
+UPDATER_RELEASE_TAG="${CANVAS_UPDATER_RELEASE_TAG:-}"
 SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}"
 UPDATER_BIN="/usr/local/bin/open-ai-canvas-host-updater"
 UPDATER_ENV="/etc/open-ai-canvas-updater.env"
 UPDATER_SERVICE="/etc/systemd/system/open-ai-canvas-updater.service"
+
+COMPOSE_FILE=""
+MIGRATION_COMPOSE_FILE=""
+DATABASE_MODE=""
+IMAGE_REPOSITORY="${CANVAS_UPDATER_IMAGE_REPOSITORY:-}"
 
 fail() {
     printf 'Host Updater 安装失败：%s\n' "$1" >&2
@@ -21,23 +28,53 @@ require_root() {
     command -v curl >/dev/null 2>&1 || fail "缺少 curl"
     command -v sha256sum >/dev/null 2>&1 || fail "缺少 sha256sum"
     command -v openssl >/dev/null 2>&1 || fail "缺少 openssl"
+    command -v docker >/dev/null 2>&1 || fail "缺少 docker"
     [[ -f "${INSTALL_DIR}/.env" ]] || fail "未找到 ${INSTALL_DIR}/.env"
-    [[ -f "${INSTALL_DIR}/docker-compose.deploy.yml" ]] || fail "未找到部署 Compose"
-    local backend_image web_image
+    case "$DEPLOYMENT_MODE" in
+        managed)
+            COMPOSE_FILE="docker-compose.deploy.yml"
+            MIGRATION_COMPOSE_FILE="$COMPOSE_FILE"
+            DATABASE_MODE="managed"
+            ;;
+        external)
+            COMPOSE_FILE="docker-compose.external-services.yml"
+            MIGRATION_COMPOSE_FILE="docker-compose.external-migrate.yml"
+            DATABASE_MODE="external"
+            ;;
+        *)
+            fail "不支持的 CANVAS_DEPLOYMENT_MODE：${DEPLOYMENT_MODE}（可选 managed 或 external）"
+            ;;
+    esac
+    [[ -f "${INSTALL_DIR}/${COMPOSE_FILE}" ]] || fail "未找到部署 Compose：${COMPOSE_FILE}"
+    [[ -f "${INSTALL_DIR}/${MIGRATION_COMPOSE_FILE}" ]] || fail "未找到迁移 Compose：${MIGRATION_COMPOSE_FILE}"
+    local backend_image web_image agent_image database_url redis_url
     backend_image="$(sed -n 's/^CANVAS_BACKEND_IMAGE=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
     web_image="$(sed -n 's/^CANVAS_WEB_IMAGE=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
+    agent_image="$(sed -n 's/^CANVAS_YINGCE_AGENT_IMAGE=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
     [[ "$backend_image" =~ ^ghcr\.io/[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || fail "CANVAS_BACKEND_IMAGE 必须固定为 GHCR digest"
     [[ "$web_image" =~ ^ghcr\.io/[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || fail "CANVAS_WEB_IMAGE 必须固定为 GHCR digest"
+    [[ "$agent_image" =~ ^ghcr\.io/[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || fail "CANVAS_YINGCE_AGENT_IMAGE 必须固定为 GHCR digest"
+    if [[ "$DEPLOYMENT_MODE" == "external" ]]; then
+        database_url="$(sed -n 's/^DATABASE_URL=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
+        redis_url="$(sed -n 's/^REDIS_URL=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
+        [[ -n "$database_url" ]] || fail "external 模式必须配置 DATABASE_URL"
+        [[ -n "$redis_url" ]] || fail "external 模式必须配置 REDIS_URL"
+    fi
+    if [[ -z "$IMAGE_REPOSITORY" ]]; then
+        IMAGE_REPOSITORY="ghcr.io/${REPOSITORY%%/*}/self-open-ai-canvas"
+    fi
 }
 
 read_image_tag() {
-    local configured
+	local configured updater_tag
     configured="$(sed -n 's/^CANVAS_IMAGE_TAG=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
     [[ -n "$configured" && "$configured" != "latest" ]] || fail "请先把 CANVAS_IMAGE_TAG 固定为已发布版本"
-    if [[ "$configured" == v* ]]; then
-        RELEASE_TAG="$configured"
+	updater_tag="${UPDATER_RELEASE_TAG:-$configured}"
+	[[ "$updater_tag" =~ ^v?[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || fail "CANVAS_UPDATER_RELEASE_TAG 不是有效的 Release 标签"
+	if [[ "$updater_tag" == v* ]]; then
+		RELEASE_TAG="$updater_tag"
     else
-        RELEASE_TAG="v${configured}"
+		RELEASE_TAG="v${updater_tag}"
     fi
 }
 
@@ -77,7 +114,15 @@ ensure_token() {
     fi
     [[ ${#token} -ge 32 ]] || fail "CANVAS_UPDATER_TOKEN 长度不足"
     umask 077
-    printf 'CANVAS_UPDATER_TOKEN=%s\nCANVAS_UPDATER_INSTALL_DIR=%s\nCANVAS_UPDATER_SOCKET=%s/updater.sock\n' "$token" "$INSTALL_DIR" "$SOCKET_DIR" > "$UPDATER_ENV"
+    printf '%s\n' \
+        "CANVAS_UPDATER_TOKEN=$token" \
+        "CANVAS_UPDATER_INSTALL_DIR=$INSTALL_DIR" \
+        "CANVAS_UPDATER_SOCKET=$SOCKET_DIR/updater.sock" \
+        "CANVAS_UPDATER_REPOSITORY=$REPOSITORY" \
+        "CANVAS_UPDATER_IMAGE_REPOSITORY=$IMAGE_REPOSITORY" \
+        "CANVAS_UPDATER_COMPOSE_FILE=$COMPOSE_FILE" \
+        "CANVAS_UPDATER_MIGRATION_COMPOSE_FILE=$MIGRATION_COMPOSE_FILE" \
+        "CANVAS_UPDATER_DATABASE_MODE=$DATABASE_MODE" > "$UPDATER_ENV"
 }
 
 install_service() {
@@ -113,14 +158,23 @@ install_service() {
     systemctl restart open-ai-canvas-updater.service
 }
 
+recreate_backend() {
+    CANVAS_UPDATER_SOCKET_DIR="$SOCKET_DIR" docker compose --env-file "${INSTALL_DIR}/.env" \
+        -f "${INSTALL_DIR}/${COMPOSE_FILE}" \
+        up -d --no-deps --force-recreate backend || fail "重建 backend 容器失败，请检查 Docker Compose 日志"
+}
+
 main() {
     require_root
     read_image_tag
     install_binary
     ensure_token
     install_service
-    printf 'Host Updater 已安装，Socket：%s/updater.sock\n' "$SOCKET_DIR"
-    printf '请重建 backend 容器，使 Token 与 Socket 挂载生效。\n'
+    recreate_backend
+    printf 'Host Updater 已安装，部署模式：%s，Socket：%s/updater.sock\n' "$DEPLOYMENT_MODE" "$SOCKET_DIR"
+    if [[ "$DEPLOYMENT_MODE" == "external" ]]; then
+        printf '外部 PostgreSQL/Redis 不会由更新器创建；备份和恢复通过 %s 的 db-tools 容器执行。\n' "$MIGRATION_COMPOSE_FILE"
+    fi
 }
 
 main "$@"

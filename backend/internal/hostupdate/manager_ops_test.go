@@ -10,14 +10,27 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingRunner struct {
-	calls [][]string
+	calls  [][]string
+	inputs [][]byte
 }
 
-func (r *recordingRunner) Run(_ context.Context, _ string, args, _ []string, stdout, _ io.Writer) error {
+func (r *recordingRunner) Run(ctx context.Context, name string, args, environment []string, stdout, stderr io.Writer) error {
+	return r.RunInput(ctx, name, args, environment, nil, stdout, stderr)
+}
+
+func (r *recordingRunner) RunInput(_ context.Context, _ string, args, _ []string, input io.Reader, stdout, _ io.Writer) error {
 	r.calls = append(r.calls, append([]string(nil), args...))
+	if input != nil {
+		data, err := io.ReadAll(input)
+		if err != nil {
+			return err
+		}
+		r.inputs = append(r.inputs, data)
+	}
 	if stdout != nil {
 		_, _ = io.WriteString(stdout, "backup-fixture")
 	}
@@ -101,6 +114,94 @@ func TestCurrentVersionRejectsLatest(t *testing.T) {
 	manager := &Manager{config: Config{InstallDir: installDir, EnvFile: ".env"}}
 	if _, err := manager.currentVersion(); err == nil {
 		t.Fatal("latest tag was accepted")
+	}
+}
+
+func TestNewManagerDefaultsToSelfOpenImageRepository(t *testing.T) {
+	root := t.TempDir()
+	manager, err := NewManager(Config{
+		Repository: "benxh1024/self-open-ai-canvas",
+		InstallDir: root,
+		StateDir:   filepath.Join(root, "state"),
+		BackupDir:  filepath.Join(root, "backups"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := manager.config.ImageRepository, "ghcr.io/benxh1024/self-open-ai-canvas"; got != want {
+		t.Fatalf("ImageRepository=%q, want %q", got, want)
+	}
+	if manager.config.DatabaseMode != DatabaseModeManaged {
+		t.Fatalf("DatabaseMode=%q, want managed", manager.config.DatabaseMode)
+	}
+}
+
+func TestNewManagerRejectsUnknownDatabaseMode(t *testing.T) {
+	_, err := NewManager(Config{DatabaseMode: DatabaseMode("shared")})
+	if err == nil {
+		t.Fatal("unknown database mode was accepted")
+	}
+}
+
+func TestExternalBackupAndRestoreUseDBToolsAndPreserveDataMount(t *testing.T) {
+	installDir := t.TempDir()
+	backupDir := filepath.Join(installDir, "backups")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, ".env"), []byte("DATABASE_URL=postgresql://canvas:secret@host.docker.internal:5432/canvas\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	manager := &Manager{
+		config: Config{
+			InstallDir:           installDir,
+			ComposeFile:          "docker-compose.external-services.yml",
+			MigrationComposeFile: "docker-compose.external-migrate.yml",
+			EnvFile:              ".env",
+			BackupDir:            backupDir,
+			DatabaseMode:         DatabaseModeExternal,
+			StepTimeout:          time.Minute,
+		},
+		runner: runner,
+	}
+	backup, err := manager.createBackup("v1.2.2-preview.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.restoreDatabase(backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.restoreBackendData(backup); err != nil {
+		t.Fatal(err)
+	}
+
+	var backupCall, restoreCall, dataRestoreCall string
+	for _, call := range runner.calls {
+		joined := strings.Join(call, " ")
+		switch {
+		case strings.Contains(joined, "db-tools -ec exec pg_dump"):
+			backupCall = joined
+		case strings.Contains(joined, "db-tools -ec exec pg_restore"):
+			restoreCall = joined
+		case strings.Contains(joined, "--user root --entrypoint sh backend -ec find /data"):
+			dataRestoreCall = joined
+		}
+	}
+	if !strings.Contains(backupCall, "-f "+filepath.Join(installDir, "docker-compose.external-migrate.yml")) {
+		t.Fatalf("external backup did not use migration Compose: %q", backupCall)
+	}
+	if !strings.Contains(backupCall, `--dbname="$DATABASE_URL" --format=custom`) {
+		t.Fatalf("external backup did not use DATABASE_URL: %q", backupCall)
+	}
+	if !strings.Contains(restoreCall, `--clean --if-exists --no-owner --no-privileges --dbname="$DATABASE_URL"`) {
+		t.Fatalf("external restore did not clean the dedicated database: %q", restoreCall)
+	}
+	if !strings.Contains(dataRestoreCall, "find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + && tar -C /data -xf -") {
+		t.Fatalf("backend data restore did not preserve /data root: %q", dataRestoreCall)
+	}
+	if len(runner.inputs) != 2 {
+		t.Fatalf("input streams=%d, want database and data restore streams", len(runner.inputs))
 	}
 }
 

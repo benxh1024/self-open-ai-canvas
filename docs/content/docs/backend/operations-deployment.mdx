@@ -178,10 +178,24 @@ YINGCE_AGENT_TOKEN=请替换为至少32个字符的随机值
 `pg_hba.conf` 和 Redis 防火墙/ACL 中只放行必要的 Docker 网段；不要为了接入而公开
 数据库端口。若 PostgreSQL/Redis 在另一台机器上，直接把连接串中的主机名换成内网地址。
 
-这个外部服务编排不会启动 Host Updater。因为更新器的备份/恢复流程依赖 Compose 内的
-`postgres` 服务，使用外部数据库时请手动备份数据库，并在升级前先更新 `.env` 中的
-Backend 镜像、运行 `docker-compose.external-migrate.yml`，再启动应用服务。不要把
+外部服务编排可以接入 Host Updater，但必须把 PostgreSQL 数据库专门提供给影策使用。
+更新器通过 `docker-compose.external-migrate.yml` 的 `db-tools` 容器在 Docker 网络内执行
+`pg_dump` 和 `pg_restore`，因此不会在宿主机上解析只对容器可用的 `host.docker.internal`。
+普通 `up -d` 仍不会启动 `migrate`，首次安装时仍需显式执行上面的迁移命令。不要把
 `docker-compose.deploy.yml` 和本文件混用。
+
+在两个 Compose 文件和 `.env` 都位于 `/opt/open-ai-canvas` 后，可以按以下方式安装更新器：
+
+```bash
+cd /opt/open-ai-canvas
+curl -fsSL https://raw.githubusercontent.com/benxh1024/self-open-ai-canvas/main/scripts/install-host-updater.sh \
+  | sudo env CANVAS_DEPLOYMENT_MODE=external CANVAS_UPDATER_RELEASE_TAG=vX.Y.Z bash
+```
+
+安装脚本会将 external 主 Compose、独立迁移 Compose 和 `DATABASE_MODE=external` 写入更新器
+配置，并重建 backend 以挂载 Unix Socket。更新前会备份外部数据库和 `/data`；迁移、启动或
+健康检查失败时会恢复这两份备份。`pg_restore --clean` 会清理目标数据库对象，不能把多个
+应用共用的数据库配置给更新器。
 
 生产应由宿主机反向代理终止 TLS，并正确传递 `X-Forwarded-Proto` 与 `X-Forwarded-Host`。首次管理员注册应在受控网络完成，之后关闭公开注册。
 
@@ -220,13 +234,13 @@ push v* tag / 手动触发
 
 | 镜像 | Dockerfile | 目标架构 |
 | --- | --- | --- |
-| `open-ai-canvas-web` | 根 `Dockerfile` | amd64、arm64 |
-| `open-ai-canvas-backend` | `backend/Dockerfile` | amd64、arm64，分别在原生 Runner 构建 |
-| `open-ai-canvas-yingce-agent` | `yingce-agent/Dockerfile` | amd64、arm64 |
+| `self-open-ai-canvas-web` | 根 `Dockerfile` | amd64、arm64 |
+| `self-open-ai-canvas-backend` | `backend/Dockerfile` | amd64、arm64，分别在原生 Runner 构建 |
+| `self-open-ai-canvas-yingce-agent` | `yingce-agent/Dockerfile` | amd64、arm64 |
 
 构建阶段先推送不可变 `sha-<完整提交>-<架构>` 镜像，并记录各镜像 digest。全部质量检查成功后，才创建多架构 manifest 并推广 `sha-<完整提交>`、短 SHA 和版本 tag；手动在 `main` 上运行时也可推广 `latest`。服务器部署最终把镜像固定为 `@sha256:...`，不长期依赖可变 tag。
 
-推送 `v*` tag 时，发布 job 还会交叉编译 `open-ai-canvas-host-updater-linux-amd64` 和 `open-ai-canvas-host-updater-linux-arm64`，生成 `SHA256SUMS`，并把它们连同 `docker-compose.deploy.yml` 上传到 GitHub Release。
+推送 `v*` tag 时，发布 job 还会交叉编译 `open-ai-canvas-host-updater-linux-amd64` 和 `open-ai-canvas-host-updater-linux-arm64`，生成 `SHA256SUMS`，并把它们连同 `docker-compose.deploy.yml`、`docker-compose.external-services.yml` 和 `docker-compose.external-migrate.yml` 上传到 GitHub Release。
 
 backend 镜像内部包含三个 Go 可执行文件：`yingce-backend`、`migrate-schema` 和 `migrate-sqlite-postgres`。前两个由长驻后端或一次性迁移容器使用；SQLite 到 PostgreSQL 迁移工具只由维护者在数据库迁移时手工调用。
 
@@ -309,7 +323,7 @@ Host Updater 是运行在 Linux 宿主机 systemd 中的 `open-ai-canvas-host-up
 
 业务 backend 不挂载 Docker Socket。它只通过 `/run/open-ai-canvas-updater/updater.sock` 与 updater 通信，且请求携带 `CANVAS_UPDATER_TOKEN`。
 
-更新顺序：检查 Release、下载并验证目标 Compose、预检、创建 PostgreSQL 与数据目录 ZIP 备份、拉取并验证镜像 digest、停止 web/backend、运行目标 `migrate-schema up`、更新 `.env` 的版本与 immutable image digest、启动目标服务并检查稳定窗口。状态和日志写入 `/var/lib/open-ai-canvas-updater/state.json`。
+更新顺序：检查 Release、下载并验证目标 Compose、预检、创建 PostgreSQL 与数据目录 ZIP 备份、拉取并验证镜像 digest、停止 web/backend/Agent、运行目标 `migrate-schema up`、更新 `.env` 的版本与 immutable image digest、启动目标服务并检查稳定窗口。managed 模式使用 Compose 内的 `postgres`；external 模式使用独立迁移 Compose 的 `db-tools` 容器访问 `DATABASE_URL`。状态和日志写入 `/var/lib/open-ai-canvas-updater/state.json`。
 
 迁移、启动或健康检查失败时会自动回滚：恢复旧 Compose 与 `.env`、验证备份、用 `pg_restore` 恢复 PostgreSQL、恢复数据目录、启动旧服务并再次验收。管理员可手动发起回滚，但必须同时存在上一版本与已验证备份；Updater 在运行中意外退出会进入 `manual_intervention`，不伪造成功。
 
@@ -339,13 +353,21 @@ sudo docker compose --env-file .env -f docker-compose.deploy.yml ps
 
 ### 为既有 Release 部署补装 Updater
 
-仅当现有部署已经使用官方 Release 镜像、`docker-compose.deploy.yml`，且 `.env` 中 backend 和 web 镜像已固定为 GHCR digest 时，可补装：
+仅当现有部署已经使用官方 Release 镜像、对应的 Compose 文件，且 `.env` 中 backend、web 和 Agent 镜像已固定为 GHCR digest 时，可补装。managed 部署使用：
 
 ```bash
 cd /opt/open-ai-canvas
 curl -fsSL https://raw.githubusercontent.com/benxh1024/self-open-ai-canvas/main/scripts/install-host-updater.sh | sudo bash
 sudo docker compose --env-file .env -f docker-compose.deploy.yml \
   up -d --no-deps --force-recreate backend
+```
+
+external 部署使用：
+
+```bash
+cd /opt/open-ai-canvas
+curl -fsSL https://raw.githubusercontent.com/benxh1024/self-open-ai-canvas/main/scripts/install-host-updater.sh \
+  | sudo env CANVAS_DEPLOYMENT_MODE=external bash
 ```
 
 补装后通过后台检查更新。若部署来自自建源码、旧 SQLite 或自定义 Compose，先完成备份、数据库迁移和部署核对，不要直接安装更新器后尝试接管。

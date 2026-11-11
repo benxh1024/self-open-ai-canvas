@@ -32,6 +32,8 @@ services:
       CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS: ${CANVAS_ALLOWED_PRIVATE_UPSTREAM_HOSTS:-}
       CANVAS_CORS_ORIGINS: ${CANVAS_CORS_ORIGINS:-}
       CANVAS_PUBLIC_BASE_URL: ${CANVAS_PUBLIC_BASE_URL:-}
+      CANVAS_UPDATER_SOCKET: /run/open-ai-canvas-updater/updater.sock
+      CANVAS_UPDATER_TOKEN: ${CANVAS_UPDATER_TOKEN:-}
       YINGCE_AGENT_URL: http://yingce-agent:8081
       YINGCE_AGENT_TOKEN: ${YINGCE_AGENT_TOKEN:?请先配置至少 32 个字符的 YINGCE_AGENT_TOKEN}
       YINGCE_AGENT_BRIDGE_HOST: backend
@@ -42,6 +44,7 @@ services:
       - "host.docker.internal:host-gateway"
     volumes:
       - ${CANVAS_DATA_PATH:-backend-data}:/data
+      - ${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}:/run/open-ai-canvas-updater
     depends_on:
       yingce-agent:
         condition: service_healthy

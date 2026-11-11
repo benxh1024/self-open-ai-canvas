@@ -29,19 +29,22 @@ func run(ctx context.Context) error {
 	socketPath := env("CANVAS_UPDATER_SOCKET", "/run/open-ai-canvas-updater/updater.sock")
 	token := strings.TrimSpace(os.Getenv("CANVAS_UPDATER_TOKEN"))
 	manager, err := hostupdate.NewManager(hostupdate.Config{
-		Repository:   env("CANVAS_UPDATER_REPOSITORY", "benxh1024/self-open-ai-canvas"),
-		InstallDir:   env("CANVAS_UPDATER_INSTALL_DIR", "/opt/open-ai-canvas"),
-		ComposeFile:  env("CANVAS_UPDATER_COMPOSE_FILE", "docker-compose.deploy.yml"),
-		EnvFile:      env("CANVAS_UPDATER_ENV_FILE", ".env"),
-		StateDir:     env("CANVAS_UPDATER_STATE_DIR", "/var/lib/open-ai-canvas-updater"),
-		BackupDir:    env("CANVAS_UPDATER_BACKUP_DIR", "/opt/open-ai-canvas/backups"),
-		HealthURL:    strings.TrimSpace(os.Getenv("CANVAS_UPDATER_HEALTH_URL")),
-		GitHubToken:  strings.TrimSpace(os.Getenv("CANVAS_UPDATER_GITHUB_TOKEN")),
-		StableWindow: envDuration("CANVAS_UPDATER_STABLE_WINDOW", 30*time.Second),
-		StepTimeout:  envDuration("CANVAS_UPDATER_STEP_TIMEOUT", 20*time.Minute),
-		BinaryPath:   env("CANVAS_UPDATER_BINARY_PATH", "/usr/local/bin/open-ai-canvas-host-updater"),
-		ServiceName:  env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
-		SelfUpdate:   envBool("CANVAS_UPDATER_SELF_UPDATE", true),
+		Repository:           env("CANVAS_UPDATER_REPOSITORY", "benxh1024/self-open-ai-canvas"),
+		ImageRepository:      strings.TrimSpace(os.Getenv("CANVAS_UPDATER_IMAGE_REPOSITORY")),
+		InstallDir:           env("CANVAS_UPDATER_INSTALL_DIR", "/opt/open-ai-canvas"),
+		ComposeFile:          env("CANVAS_UPDATER_COMPOSE_FILE", "docker-compose.deploy.yml"),
+		MigrationComposeFile: strings.TrimSpace(os.Getenv("CANVAS_UPDATER_MIGRATION_COMPOSE_FILE")),
+		DatabaseMode:         hostupdate.DatabaseMode(env("CANVAS_UPDATER_DATABASE_MODE", string(hostupdate.DatabaseModeManaged))),
+		EnvFile:              env("CANVAS_UPDATER_ENV_FILE", ".env"),
+		StateDir:             env("CANVAS_UPDATER_STATE_DIR", "/var/lib/open-ai-canvas-updater"),
+		BackupDir:            env("CANVAS_UPDATER_BACKUP_DIR", "/opt/open-ai-canvas/backups"),
+		HealthURL:            strings.TrimSpace(os.Getenv("CANVAS_UPDATER_HEALTH_URL")),
+		GitHubToken:          strings.TrimSpace(os.Getenv("CANVAS_UPDATER_GITHUB_TOKEN")),
+		StableWindow:         envDuration("CANVAS_UPDATER_STABLE_WINDOW", 30*time.Second),
+		StepTimeout:          envDuration("CANVAS_UPDATER_STEP_TIMEOUT", 20*time.Minute),
+		BinaryPath:           env("CANVAS_UPDATER_BINARY_PATH", "/usr/local/bin/open-ai-canvas-host-updater"),
+		ServiceName:          env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
+		SelfUpdate:           envBool("CANVAS_UPDATER_SELF_UPDATE", true),
 	})
 	if err != nil {
 		return err

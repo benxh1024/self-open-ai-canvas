@@ -144,7 +144,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [open-ai-canvas-web, open-ai-canvas-backend, open-ai-canvas-yingce-agent]
+        image: [self-open-ai-canvas-web, self-open-ai-canvas-backend, self-open-ai-canvas-yingce-agent]
     # 不同提交可并行编译，但同一镜像的可变标签更新必须串行。
     concurrency:
       group: image-tags-${{ matrix.image }}-${{ github.ref }}
@@ -168,7 +168,7 @@ jobs:
           IMAGE: ghcr.io/${{ needs.prepare.outputs.owner }}/${{ matrix.image }}
           VERSION_TAG: ${{ needs.prepare.outputs.image_tag }}
           DIGEST_DIR: ${{ runner.temp }}/digests
-          EXPECTED_DIGESTS: ${{ matrix.image == 'open-ai-canvas-backend' && '2' || '1' }}
+          EXPECTED_DIGESTS: ${{ matrix.image == 'self-open-ai-canvas-backend' && '2' || '1' }}
         run: bash .github/scripts/promote-image.sh
 
   release:
@@ -225,6 +225,8 @@ jobs:
             dist/open-ai-canvas-host-updater-linux-arm64
             dist/SHA256SUMS
             docker-compose.deploy.yml
+            docker-compose.external-services.yml
+            docker-compose.external-migrate.yml
           )
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
