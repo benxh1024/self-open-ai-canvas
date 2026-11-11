@@ -127,7 +127,7 @@ async function render(children: ReactNode) {
                 <App>
                     <QueryClientProvider client={client}>
                         <MemoryRouter>
-                            <MotionConfig reducedMotion="always">{children}</MotionConfig>
+                            <MotionConfig isStatic reducedMotion="always">{children}</MotionConfig>
                         </MemoryRouter>
                     </QueryClientProvider>
                 </App>
