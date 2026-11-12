@@ -355,3 +355,14 @@ func TestDeployComposeAgentVariablesFallbackForLegacyUpdater(t *testing.T) {
 		}
 	}
 }
+
+func TestExternalMigrationComposeUsesConfigurableCompatibleDBToolsImage(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "docker-compose.external-migrate.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose := string(data)
+	if !strings.Contains(compose, "${CANVAS_DB_TOOLS_IMAGE:-postgres:18-alpine}") {
+		t.Fatal("external migration Compose must use a configurable PostgreSQL 18 db-tools image")
+	}
+}

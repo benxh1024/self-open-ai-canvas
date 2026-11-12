@@ -192,6 +192,9 @@ docker network connect db-common-network <redis-container>
 更新器通过 `docker-compose.external-migrate.yml` 的 `db-tools` 容器在 Docker 网络内执行
 `pg_dump` 和 `pg_restore`；该容器也配置了 `host-gateway`，因此连接串使用
 `host.docker.internal` 时由容器访问宿主机服务，而不是由宿主机上的更新器进程访问。
+`CANVAS_DB_TOOLS_IMAGE` 默认是 `postgres:18-alpine`；其 PostgreSQL 主版本必须不低于外部
+数据库服务端。例如服务端为 PostgreSQL 18 时保持默认值，服务端升级到 PostgreSQL 19 后需先将
+该变量改为 `postgres:19-alpine`，再执行在线更新。
 普通 `up -d` 仍不会启动 `migrate`，首次安装时仍需显式执行上面的迁移命令。不要把
 `docker-compose.deploy.yml` 和本文件混用。
 

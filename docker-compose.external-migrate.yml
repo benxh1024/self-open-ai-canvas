@@ -5,7 +5,9 @@ services:
   # only when explicitly targeted; normal application startup never starts it.
   db-tools:
     profiles: ["maintenance"]
-    image: postgres:17-alpine
+    # pg_dump must use a PostgreSQL major version no older than the external
+    # server. Override CANVAS_DB_TOOLS_IMAGE when the server is newer.
+    image: ${CANVAS_DB_TOOLS_IMAGE:-postgres:18-alpine}
     environment:
       DATABASE_URL: ${DATABASE_URL:?请先配置外部 PostgreSQL 的 DATABASE_URL}
     extra_hosts:
