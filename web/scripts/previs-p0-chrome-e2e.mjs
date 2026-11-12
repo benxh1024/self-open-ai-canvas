@@ -497,6 +497,15 @@ async function smokeWorkbench(cdp, baseUrl) {
     const propAppeared = await cdp.poll(`!!document.querySelector('[aria-label="删除 单人沙发"]')`, "prop row", 20000);
     assert(propAppeared, "A10 added prop appears in object list");
 
+    const undoReady = await cdp.poll(
+        `(() => { const button = document.querySelector('[aria-label="撤销"]'); return !!button && !button.disabled && button.getClientRects().length > 0; })()`,
+        "undo enabled after prop commit",
+        10000,
+    );
+    if (!undoReady) {
+        const undoState = await cdp.evaluate(`(() => { const button = document.querySelector('[aria-label="撤销"]'); const prop = document.querySelector('[aria-label="删除 单人沙发"]'); return { undo: button ? { disabled: button.disabled, rect: button.getBoundingClientRect().toJSON() } : null, prop: !!prop, historyHint: document.querySelector('.previs-desk-history')?.textContent || '' }; })()`);
+        throw new Error(`A: 撤销未在道具提交后启用 — ${JSON.stringify(undoState)}`);
+    }
     const undone = await cdp.click('[aria-label="撤销"]');
     if (!undone) throw new Error("A: 撤销 button not clickable");
     const propGone = await cdp.poll(`!document.querySelector('[aria-label="删除 单人沙发"]')`, "prop removed by undo", 20000);
