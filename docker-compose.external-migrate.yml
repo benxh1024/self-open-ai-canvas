@@ -7,7 +7,7 @@ services:
     profiles: ["maintenance"]
     # pg_dump must use a PostgreSQL major version no older than the external
     # server. Override CANVAS_DB_TOOLS_IMAGE when the server is newer.
-    image: ${CANVAS_DB_TOOLS_IMAGE:-postgres:18-alpine}
+    image: ${CANVAS_DB_TOOLS_IMAGE:-postgres:18}
     environment:
       DATABASE_URL: ${DATABASE_URL:?请先配置外部 PostgreSQL 的 DATABASE_URL}
     extra_hosts:
