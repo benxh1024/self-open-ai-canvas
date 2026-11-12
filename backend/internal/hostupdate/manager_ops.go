@@ -6,12 +6,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,6 +30,20 @@ type githubRelease struct {
 	PublishedAt time.Time `json:"published_at"`
 	Draft       bool      `json:"draft"`
 	Prerelease  bool      `json:"prerelease"`
+}
+
+type githubContent struct {
+	Content  string `json:"content"`
+	Encoding string `json:"encoding"`
+}
+
+type githubReleaseAsset struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+type githubReleaseDetails struct {
+	Assets []githubReleaseAsset `json:"assets"`
 }
 
 func (m *Manager) latestRelease(ctx context.Context) (*Release, error) {
@@ -95,14 +111,21 @@ func (m *Manager) prepareTargetMigrationCompose(targetVersion string) (string, e
 }
 
 func (m *Manager) prepareTargetComposeFile(targetVersion, composeFile string) (string, error) {
-	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", m.config.Repository, targetVersion, composeFile)
+	endpoint := fmt.Sprintf(
+		"https://api.github.com/repos/%s/contents/%s?ref=%s",
+		m.config.Repository,
+		url.PathEscape(composeFile),
+		url.QueryEscape(targetVersion),
+	)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", err
 	}
+	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("User-Agent", "open-ai-canvas-host-updater")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	m.setGitHubAuth(request)
 	response, err := m.httpClient.Do(request)
 	if err != nil {
@@ -112,12 +135,22 @@ func (m *Manager) prepareTargetComposeFile(targetVersion, composeFile string) (s
 	if response.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("下载目标 Compose 返回 HTTP %d", response.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, 2<<20))
+	var content githubContent
+	if err := json.NewDecoder(io.LimitReader(response.Body, 3<<20)).Decode(&content); err != nil {
+		return "", fmt.Errorf("解析目标 Compose：%w", err)
+	}
+	if content.Encoding != "base64" {
+		return "", fmt.Errorf("目标 Compose 编码不受支持：%s", content.Encoding)
+	}
+	data, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(strings.ReplaceAll(content.Content, "\n", ""), "\r", ""))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("解码目标 Compose：%w", err)
 	}
 	if len(data) == 0 {
 		return "", errors.New("目标 Compose 文件为空")
+	}
+	if len(data) > 2<<20 {
+		return "", errors.New("目标 Compose 文件超过允许大小")
 	}
 	name := strings.NewReplacer("/", "-", "\\", "-", ".", "-").Replace(composeFile)
 	path := filepath.Join(m.config.StateDir, "compose-"+name+"-"+strings.TrimPrefix(targetVersion, "v")+".next.yml")
@@ -200,9 +233,12 @@ func (m *Manager) prepareUpdaterBinary(targetVersion string) (string, error) {
 	if strings.TrimSpace(m.config.BinaryPath) == "" {
 		return "", errors.New("未配置 Host Updater 二进制路径")
 	}
-	baseURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/", m.config.Repository, targetVersion)
 	asset := "open-ai-canvas-host-updater-linux-" + runtime.GOARCH
-	checksums, err := m.downloadReleaseAsset(baseURL+"SHA256SUMS", 1<<20)
+	assetIDs, err := m.releaseAssetIDs(targetVersion, []string{"SHA256SUMS", asset})
+	if err != nil {
+		return "", fmt.Errorf("读取目标 Release 资产：%w", err)
+	}
+	checksums, err := m.downloadReleaseAsset(assetIDs["SHA256SUMS"], 1<<20)
 	if err != nil {
 		return "", fmt.Errorf("下载 Host Updater 校验清单：%w", err)
 	}
@@ -217,7 +253,7 @@ func (m *Manager) prepareUpdaterBinary(targetVersion string) (string, error) {
 	if len(expected) != 64 {
 		return "", fmt.Errorf("目标 Release 的 SHA256SUMS 缺少 %s", asset)
 	}
-	binary, err := m.downloadReleaseAsset(baseURL+asset, 128<<20)
+	binary, err := m.downloadReleaseAsset(assetIDs[asset], 128<<20)
 	if err != nil {
 		return "", fmt.Errorf("下载目标 Host Updater：%w", err)
 	}
@@ -233,14 +269,63 @@ func (m *Manager) prepareUpdaterBinary(targetVersion string) (string, error) {
 	return path, nil
 }
 
-func (m *Manager) downloadReleaseAsset(url string, limit int64) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+func (m *Manager) releaseAssetIDs(targetVersion string, names []string) (map[string]int64, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	endpoint := fmt.Sprintf(
+		"https://api.github.com/repos/%s/releases/tags/%s",
+		m.config.Repository,
+		url.PathEscape(targetVersion),
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
+	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("User-Agent", "open-ai-canvas-host-updater")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	m.setGitHubAuth(request)
+	response, err := m.httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GitHub Release 返回 HTTP %d", response.StatusCode)
+	}
+	var details githubReleaseDetails
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxReleaseResponseBytes)).Decode(&details); err != nil {
+		return nil, err
+	}
+	wanted := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		wanted[name] = struct{}{}
+	}
+	assets := make(map[string]int64, len(names))
+	for _, asset := range details.Assets {
+		if _, ok := wanted[asset.Name]; ok && asset.ID > 0 {
+			assets[asset.Name] = asset.ID
+		}
+	}
+	for _, name := range names {
+		if assets[name] == 0 {
+			return nil, fmt.Errorf("目标 Release %s 中不存在资产 %s", targetVersion, name)
+		}
+	}
+	return assets, nil
+}
+
+func (m *Manager) downloadReleaseAsset(assetID int64, limit int64) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/releases/assets/%d", m.config.Repository, assetID)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Accept", "application/octet-stream")
+	request.Header.Set("User-Agent", "open-ai-canvas-host-updater")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	m.setGitHubAuth(request)
 	response, err := m.httpClient.Do(request)
 	if err != nil {
