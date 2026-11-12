@@ -4,7 +4,9 @@ set -Eeuo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/open-ai-canvas}"
 REPOSITORY="${REPOSITORY:-benxh1024/self-open-ai-canvas}"
-DEPLOYMENT_MODE="${CANVAS_DEPLOYMENT_MODE:-managed}"
+# Command-line environment takes priority. When omitted, use the deployment's
+# persisted mode so a later updater reinstall cannot silently switch Compose files.
+DEPLOYMENT_MODE="${CANVAS_DEPLOYMENT_MODE:-}"
 UPDATER_RELEASE_TAG="${CANVAS_UPDATER_RELEASE_TAG:-}"
 SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}"
 UPDATER_BIN="/usr/local/bin/open-ai-canvas-host-updater"
@@ -30,6 +32,10 @@ require_root() {
     command -v openssl >/dev/null 2>&1 || fail "缺少 openssl"
     command -v docker >/dev/null 2>&1 || fail "缺少 docker"
     [[ -f "${INSTALL_DIR}/.env" ]] || fail "未找到 ${INSTALL_DIR}/.env"
+    if [[ -z "$DEPLOYMENT_MODE" ]]; then
+        DEPLOYMENT_MODE="$(sed -n 's/^CANVAS_DEPLOYMENT_MODE=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
+    fi
+    DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-managed}"
     case "$DEPLOYMENT_MODE" in
         managed)
             COMPOSE_FILE="docker-compose.deploy.yml"
@@ -59,6 +65,7 @@ require_root() {
         redis_url="$(sed -n 's/^REDIS_URL=//p' "${INSTALL_DIR}/.env" | tail -n 1)"
         [[ -n "$database_url" ]] || fail "external 模式必须配置 DATABASE_URL"
         [[ -n "$redis_url" ]] || fail "external 模式必须配置 REDIS_URL"
+        docker network inspect db-common-network >/dev/null 2>&1 || fail "external 模式要求 Docker 网络 db-common-network；请先执行：docker network create db-common-network"
     fi
     if [[ -z "$IMAGE_REPOSITORY" ]]; then
         IMAGE_REPOSITORY="ghcr.io/${REPOSITORY%%/*}/self-open-ai-canvas"
@@ -113,6 +120,7 @@ ensure_token() {
         mv "$temporary" "${INSTALL_DIR}/.env"
     fi
     [[ ${#token} -ge 32 ]] || fail "CANVAS_UPDATER_TOKEN 长度不足"
+    set_env_value "${INSTALL_DIR}/.env" "CANVAS_DEPLOYMENT_MODE" "$DEPLOYMENT_MODE"
     umask 077
     printf '%s\n' \
         "CANVAS_UPDATER_TOKEN=$token" \

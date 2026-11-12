@@ -168,9 +168,19 @@ docker compose --env-file .env -f docker-compose.external-services.yml up -d
 CANVAS_BACKEND_IMAGE=ghcr.io/benxh1024/self-open-ai-canvas-backend:1.2.3
 CANVAS_WEB_IMAGE=ghcr.io/benxh1024/self-open-ai-canvas-web:1.2.3
 CANVAS_YINGCE_AGENT_IMAGE=ghcr.io/benxh1024/self-open-ai-canvas-yingce-agent:1.2.3
+CANVAS_DEPLOYMENT_MODE=external
 DATABASE_URL=postgresql://user:password@host.docker.internal:5432/open_ai_canvas?sslmode=disable
 REDIS_URL=redis://:password@host.docker.internal:6379/0
 YINGCE_AGENT_TOKEN=请替换为至少32个字符的随机值
+```
+
+external Compose 使用名为 `db-common-network` 的外部 Docker 网络。首次部署前创建它；如果
+PostgreSQL 和 Redis 也运行在 Docker 中，将它们接入该网络，并把连接串主机改为相应容器名：
+
+```bash
+docker network inspect db-common-network >/dev/null 2>&1 || docker network create db-common-network
+docker network connect db-common-network <postgres-container>
+docker network connect db-common-network <redis-container>
 ```
 
 容器中的 `127.0.0.1` 指向容器自身，不能用来访问宿主机数据库。Linux Docker 使用
@@ -180,7 +190,8 @@ YINGCE_AGENT_TOKEN=请替换为至少32个字符的随机值
 
 外部服务编排可以接入 Host Updater，但必须把 PostgreSQL 数据库专门提供给影策使用。
 更新器通过 `docker-compose.external-migrate.yml` 的 `db-tools` 容器在 Docker 网络内执行
-`pg_dump` 和 `pg_restore`，因此不会在宿主机上解析只对容器可用的 `host.docker.internal`。
+`pg_dump` 和 `pg_restore`；该容器也配置了 `host-gateway`，因此连接串使用
+`host.docker.internal` 时由容器访问宿主机服务，而不是由宿主机上的更新器进程访问。
 普通 `up -d` 仍不会启动 `migrate`，首次安装时仍需显式执行上面的迁移命令。不要把
 `docker-compose.deploy.yml` 和本文件混用。
 
@@ -189,10 +200,11 @@ YINGCE_AGENT_TOKEN=请替换为至少32个字符的随机值
 ```bash
 cd /opt/open-ai-canvas
 curl -fsSL https://raw.githubusercontent.com/benxh1024/self-open-ai-canvas/main/scripts/install-host-updater.sh \
-  | sudo env CANVAS_DEPLOYMENT_MODE=external CANVAS_UPDATER_RELEASE_TAG=vX.Y.Z bash
+  | sudo env CANVAS_UPDATER_RELEASE_TAG=vX.Y.Z bash
 ```
 
-安装脚本会将 external 主 Compose、独立迁移 Compose 和 `DATABASE_MODE=external` 写入更新器
+安装脚本优先使用调用命令里的 `CANVAS_DEPLOYMENT_MODE`；未设置时读取 `.env` 中的
+`CANVAS_DEPLOYMENT_MODE`。它会将 external 主 Compose、独立迁移 Compose 和 `DATABASE_MODE=external` 写入更新器
 配置，并重建 backend 以挂载 Unix Socket。更新前会备份外部数据库和 `/data`；迁移、启动或
 健康检查失败时会恢复这两份备份。`pg_restore --clean` 会清理目标数据库对象，不能把多个
 应用共用的数据库配置给更新器。
@@ -367,7 +379,7 @@ external 部署使用：
 ```bash
 cd /opt/open-ai-canvas
 curl -fsSL https://raw.githubusercontent.com/benxh1024/self-open-ai-canvas/main/scripts/install-host-updater.sh \
-  | sudo env CANVAS_DEPLOYMENT_MODE=external bash
+  | sudo bash
 ```
 
 补装后通过后台检查更新。若部署来自自建源码、旧 SQLite 或自定义 Compose，先完成备份、数据库迁移和部署核对，不要直接安装更新器后尝试接管。

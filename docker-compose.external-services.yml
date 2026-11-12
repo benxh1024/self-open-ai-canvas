@@ -43,7 +43,9 @@ services:
       CANVAS_LOG_LEVEL: ${CANVAS_LOG_LEVEL:-info}
       CANVAS_LOG_FORMAT: ${CANVAS_LOG_FORMAT:-text}
       GIN_MODE: release
-
+    # Supports DATABASE_URL / REDIS_URL pointing at services on the Docker host.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${CANVAS_DATA_PATH:-./backend-data}:/data
       - ${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}:/run/open-ai-canvas-updater
@@ -66,11 +68,9 @@ services:
       backend:
         condition: service_healthy
     restart: unless-stopped
-    
     networks:
       - db-common-network
       - open-ai-network
-
 
 networks:
   db-common-network:
