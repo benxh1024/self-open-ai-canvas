@@ -24,6 +24,24 @@ fail() {
     exit 1
 }
 
+set_env_value() {
+    local path="$1"
+    local key="$2"
+    local value="$3"
+    local temporary
+
+    [[ -f "$path" ]] || fail "环境文件不存在：$path"
+    temporary="$(mktemp "${path}.XXXXXX")"
+    awk -v key="$key" -v value="$value" '
+        BEGIN { updated=0 }
+        index($0, key "=") == 1 { print key "=" value; updated=1; next }
+        { print }
+        END { if (!updated) print key "=" value }
+    ' "$path" > "$temporary"
+    chmod --reference="$path" "$temporary"
+    mv "$temporary" "$path"
+}
+
 require_root() {
     [[ "${EUID}" -eq 0 ]] || fail "请使用 sudo 运行"
     [[ "$(uname -s)" == "Linux" ]] || fail "仅支持 Linux 服务器"
@@ -93,14 +111,102 @@ load_github_token() {
 }
 
 download_github_file() {
-    local url="$1" output="$2"
-    local -a curl_args=(--fail --show-error --silent --location)
-    if [[ -n "$GITHUB_TOKEN" ]]; then
-        printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" \
-            | curl "${curl_args[@]}" --header @- "$url" -o "$output"
-    else
-        curl "${curl_args[@]}" "$url" -o "$output"
+    local url="$1" output="$2" accept_header="${3:-}" redirect_url response_meta status result
+    local -a curl_args=(--show-error --silent --proto '=https')
+    local -a extra_headers=(--header 'User-Agent: open-ai-canvas-host-updater')
+    if [[ -n "$accept_header" ]]; then
+        extra_headers+=(--header "$accept_header")
     fi
+    if [[ -n "$GITHUB_TOKEN" ]]; then
+        # Authenticate only the initial GitHub request. The subsequent signed
+        # asset URL must not receive the PAT through a cross-host redirect.
+        if response_meta="$(printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" \
+            | curl "${curl_args[@]}" --header @- "${extra_headers[@]}" \
+                --write-out '%{redirect_url}\t%{http_code}' --output /dev/null "$url")"; then
+            redirect_url="${response_meta%$'\t'*}"
+            status="${response_meta##*$'\t'}"
+            if [[ "$status" =~ ^3[0-9]{2}$ && -n "$redirect_url" ]]; then
+                if curl "${curl_args[@]}" --fail --location --max-redirs 10 "$redirect_url" -o "$output"; then
+                    return 0
+                else
+                    result=$?
+                fi
+            elif [[ "$status" =~ ^2[0-9]{2}$ ]]; then
+                # Some GitHub/proxy responses return the asset directly.
+                if status="$(printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" \
+                    | curl "${curl_args[@]}" --header @- "${extra_headers[@]}" \
+                        --write-out '%{http_code}' "$url" -o "$output")" && [[ "$status" =~ ^2[0-9]{2}$ ]]; then
+                    return 0
+                else
+                    result=22
+                fi
+            else
+                result=22
+            fi
+        else
+            result=$?
+        fi
+    else
+        if status="$(curl "${curl_args[@]}" --fail --location --max-redirs 10 --write-out '%{http_code}' "$url" -o "$output")"; then
+            return 0
+        else
+            result=$?
+        fi
+    fi
+    printf 'GitHub 下载失败（HTTP %s，curl exit %s）：%s\n' "${status:-无响应}" "$result" "$url" >&2
+    return "$result"
+}
+
+release_asset_id() {
+    local release_json="$1" asset_name="$2"
+    if command -v jq >/dev/null 2>&1; then
+        jq -r --arg name "$asset_name" '.assets[]? | select(.name == $name) | .id' "$release_json" | head -n 1
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$release_json" "$asset_name" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    release = json.load(stream)
+for asset in release.get("assets", []):
+    if asset.get("name") == sys.argv[2]:
+        print(asset.get("id", ""))
+        break
+PY
+        return 0
+    fi
+    fail "私有 GitHub Release 下载需要 jq 或 python3 才能解析资产列表"
+}
+
+download_release_asset() {
+    local asset_name="$1" output="$2" release_json asset_id
+    if [[ -z "$GITHUB_TOKEN" ]]; then
+        download_github_file \
+            "https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}/${asset_name}" \
+            "$output"
+        return
+    fi
+
+    release_json="$(mktemp)"
+    if ! download_github_file \
+        "https://api.github.com/repos/${REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+        "$release_json" \
+        "Accept: application/vnd.github+json"; then
+        rm -f "$release_json"
+        return 1
+    fi
+    asset_id="$(release_asset_id "$release_json" "$asset_name")"
+    rm -f "$release_json"
+    if [[ ! "$asset_id" =~ ^[0-9]+$ ]]; then
+        printf 'GitHub Release %s 中不存在资产 %s\n' "$RELEASE_TAG" "$asset_name" >&2
+        return 1
+    fi
+    download_github_file \
+        "https://api.github.com/repos/${REPOSITORY}/releases/assets/${asset_id}" \
+        "$output" \
+        "Accept: application/octet-stream"
 }
 
 install_binary() {
@@ -113,9 +219,9 @@ install_binary() {
     asset="open-ai-canvas-host-updater-linux-${arch}"
     temporary="$(mktemp)"
     checksum_file="$(mktemp)"
-    download_github_file "https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}/${asset}" "$temporary" \
+    download_release_asset "$asset" "$temporary" \
         || fail "下载 Host Updater 失败；私有仓库请设置 CANVAS_UPDATER_GITHUB_TOKEN"
-    download_github_file "https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}/SHA256SUMS" "$checksum_file" \
+    download_release_asset "SHA256SUMS" "$checksum_file" \
         || fail "下载 Release 校验清单失败；私有仓库请设置 CANVAS_UPDATER_GITHUB_TOKEN"
     expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' "$checksum_file")"
     [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || fail "Release 校验清单缺少 ${asset}"
@@ -156,7 +262,15 @@ ensure_token() {
 }
 
 install_service() {
-    local temporary_service
+    local temporary_service protect_home=true
+    case "$INSTALL_DIR" in
+        /root|/root/*|/home|/home/*|/run/user|/run/user/*)
+            # ProtectHome=true hides these paths entirely. Keep the rest of
+            # the home tree read-only while ReadWritePaths grants the updater
+            # access to the selected deployment directory.
+            protect_home=read-only
+            ;;
+    esac
     install -d -m 0755 "$SOCKET_DIR"
     install -d -m 0700 /var/lib/open-ai-canvas-updater "${INSTALL_DIR}/backups"
     temporary_service="$(mktemp)"
@@ -175,7 +289,7 @@ install_service() {
         'RestartSec=5s' \
         'NoNewPrivileges=true' \
         'PrivateTmp=true' \
-        'ProtectHome=true' \
+        "ProtectHome=${protect_home}" \
         'ProtectSystem=full' \
         "ReadWritePaths=${INSTALL_DIR} /var/lib/open-ai-canvas-updater ${SOCKET_DIR} /usr/local/bin" \
         '' \
