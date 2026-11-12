@@ -39,9 +39,7 @@ func (m *Manager) latestRelease(ctx context.Context) (*Release, error) {
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("User-Agent", "open-ai-canvas-host-updater")
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if m.config.GitHubToken != "" {
-		request.Header.Set("Authorization", "Bearer "+m.config.GitHubToken)
-	}
+	m.setGitHubAuth(request)
 	response, err := m.httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("请求 GitHub Release：%w", err)
@@ -104,6 +102,8 @@ func (m *Manager) prepareTargetComposeFile(targetVersion, composeFile string) (s
 	if err != nil {
 		return "", err
 	}
+	request.Header.Set("User-Agent", "open-ai-canvas-host-updater")
+	m.setGitHubAuth(request)
 	response, err := m.httpClient.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("下载目标 Compose：%w", err)
@@ -241,6 +241,7 @@ func (m *Manager) downloadReleaseAsset(url string, limit int64) ([]byte, error) 
 		return nil, err
 	}
 	request.Header.Set("User-Agent", "open-ai-canvas-host-updater")
+	m.setGitHubAuth(request)
 	response, err := m.httpClient.Do(request)
 	if err != nil {
 		return nil, err
@@ -258,6 +259,12 @@ func (m *Manager) downloadReleaseAsset(url string, limit int64) ([]byte, error) 
 		return nil, errors.New("Release 资产超过允许大小")
 	}
 	return data, nil
+}
+
+func (m *Manager) setGitHubAuth(request *http.Request) {
+	if token := strings.TrimSpace(m.config.GitHubToken); token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
 }
 
 func (m *Manager) restartSelf() {

@@ -203,6 +203,18 @@ curl -fsSL https://raw.githubusercontent.com/benxh1024/self-open-ai-canvas/main/
   | sudo env CANVAS_UPDATER_RELEASE_TAG=vX.Y.Z bash
 ```
 
+如果仓库是私有仓库，下载脚本、Release 二进制和后续目标 Compose 都需要 GitHub Token：
+
+```bash
+sudo env CANVAS_UPDATER_RELEASE_TAG=vX.Y.Z \
+    CANVAS_UPDATER_GITHUB_TOKEN=github_pat_xxx \
+    bash scripts/install-host-updater.sh
+```
+
+Token 使用 Fine-grained PAT，Repository access 只选择当前仓库，权限只需 `Contents: Read-only`。安装脚本会把它写入 root-only 的 `/etc/open-ai-canvas-updater.env`，供更新器读取；不要写入 Docker Compose 或前端环境。
+
+如果脚本文件也要从私有仓库临时下载，先用同一个 Token 给 `raw.githubusercontent.com` 请求认证，再把 Token 传给安装脚本；更推荐先检出目标 Release，再执行上面的本地脚本命令。
+
 安装脚本优先使用调用命令里的 `CANVAS_DEPLOYMENT_MODE`；未设置时读取 `.env` 中的
 `CANVAS_DEPLOYMENT_MODE`。它会将 external 主 Compose、独立迁移 Compose 和 `DATABASE_MODE=external` 写入更新器
 配置，并重建 backend 以挂载 Unix Socket。更新前会备份外部数据库和 `/data`；迁移、启动或

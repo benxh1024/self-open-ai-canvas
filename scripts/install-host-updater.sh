@@ -12,6 +12,7 @@ SOCKET_DIR="${CANVAS_UPDATER_SOCKET_DIR:-/run/open-ai-canvas-updater}"
 UPDATER_BIN="/usr/local/bin/open-ai-canvas-host-updater"
 UPDATER_ENV="/etc/open-ai-canvas-updater.env"
 UPDATER_SERVICE="/etc/systemd/system/open-ai-canvas-updater.service"
+GITHUB_TOKEN="${CANVAS_UPDATER_GITHUB_TOKEN:-}"
 
 COMPOSE_FILE=""
 MIGRATION_COMPOSE_FILE=""
@@ -85,6 +86,23 @@ read_image_tag() {
     fi
 }
 
+load_github_token() {
+    if [[ -z "$GITHUB_TOKEN" && -f "$UPDATER_ENV" ]]; then
+        GITHUB_TOKEN="$(sed -n 's/^CANVAS_UPDATER_GITHUB_TOKEN=//p' "$UPDATER_ENV" | tail -n 1)"
+    fi
+}
+
+download_github_file() {
+    local url="$1" output="$2"
+    local -a curl_args=(--fail --show-error --silent --location)
+    if [[ -n "$GITHUB_TOKEN" ]]; then
+        printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" \
+            | curl "${curl_args[@]}" --header @- "$url" -o "$output"
+    else
+        curl "${curl_args[@]}" "$url" -o "$output"
+    fi
+}
+
 install_binary() {
     local arch asset temporary checksum_file expected
     case "$(uname -m)" in
@@ -95,8 +113,10 @@ install_binary() {
     asset="open-ai-canvas-host-updater-linux-${arch}"
     temporary="$(mktemp)"
     checksum_file="$(mktemp)"
-    curl -fsSL "https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}/${asset}" -o "$temporary"
-    curl -fsSL "https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}/SHA256SUMS" -o "$checksum_file"
+    download_github_file "https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}/${asset}" "$temporary" \
+        || fail "下载 Host Updater 失败；私有仓库请设置 CANVAS_UPDATER_GITHUB_TOKEN"
+    download_github_file "https://github.com/${REPOSITORY}/releases/download/${RELEASE_TAG}/SHA256SUMS" "$checksum_file" \
+        || fail "下载 Release 校验清单失败；私有仓库请设置 CANVAS_UPDATER_GITHUB_TOKEN"
     expected="$(awk -v asset="$asset" '$2 == asset { print $1 }' "$checksum_file")"
     [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || fail "Release 校验清单缺少 ${asset}"
     printf '%s  %s\n' "$expected" "$temporary" | sha256sum -c - >/dev/null || fail "Host Updater SHA-256 校验失败"
@@ -124,6 +144,7 @@ ensure_token() {
     umask 077
     printf '%s\n' \
         "CANVAS_UPDATER_TOKEN=$token" \
+        "CANVAS_UPDATER_GITHUB_TOKEN=$GITHUB_TOKEN" \
         "CANVAS_UPDATER_INSTALL_DIR=$INSTALL_DIR" \
         "CANVAS_UPDATER_SOCKET=$SOCKET_DIR/updater.sock" \
         "CANVAS_UPDATER_REPOSITORY=$REPOSITORY" \
@@ -131,6 +152,7 @@ ensure_token() {
         "CANVAS_UPDATER_COMPOSE_FILE=$COMPOSE_FILE" \
         "CANVAS_UPDATER_MIGRATION_COMPOSE_FILE=$MIGRATION_COMPOSE_FILE" \
         "CANVAS_UPDATER_DATABASE_MODE=$DATABASE_MODE" > "$UPDATER_ENV"
+    chmod 600 "$UPDATER_ENV"
 }
 
 install_service() {
@@ -174,6 +196,7 @@ recreate_backend() {
 
 main() {
     require_root
+    load_github_token
     read_image_tag
     install_binary
     ensure_token
