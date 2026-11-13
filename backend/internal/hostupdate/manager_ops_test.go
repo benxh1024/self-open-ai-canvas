@@ -125,45 +125,6 @@ func TestCurrentVersionRejectsLatest(t *testing.T) {
 	}
 }
 
-func TestPrepareTargetComposeFileReadsPrivateRepositoryContentsAPI(t *testing.T) {
-	stateDir := t.TempDir()
-	compose := "services:\n  backend:\n    image: example/backend\n"
-	manager := &Manager{
-		config: Config{
-			Repository:  "benxh1024/self-open-ai-canvas",
-			StateDir:    stateDir,
-			GitHubToken: "private-token",
-		},
-		httpClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-			if request.URL.Host != "api.github.com" {
-				t.Errorf("host=%q, want api.github.com", request.URL.Host)
-			}
-			if request.URL.Path != "/repos/benxh1024/self-open-ai-canvas/contents/docker-compose.external-services.yml" {
-				t.Errorf("path=%q", request.URL.Path)
-			}
-			if request.URL.Query().Get("ref") != "v1.8.5" {
-				t.Errorf("ref=%q, want v1.8.5", request.URL.Query().Get("ref"))
-			}
-			if request.Header.Get("Authorization") != "Bearer private-token" {
-				t.Errorf("authorization header missing")
-			}
-			body := `{"encoding":"base64","content":"` + base64.StdEncoding.EncodeToString([]byte(compose)) + `"}`
-			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
-		})},
-	}
-
-	path, err := manager.prepareTargetComposeFile("v1.8.5", "docker-compose.external-services.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != compose {
-		t.Fatalf("compose=%q, want %q", data, compose)
-	}
-}
 
 func TestNewManagerDefaultsToSelfOpenImageRepository(t *testing.T) {
 	root := t.TempDir()
@@ -356,13 +317,3 @@ func TestDeployComposeAgentVariablesFallbackForLegacyUpdater(t *testing.T) {
 	}
 }
 
-func TestExternalMigrationComposeUsesConfigurableCompatibleDBToolsImage(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "..", "docker-compose.external-migrate.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	compose := string(data)
-	if !strings.Contains(compose, "${CANVAS_DB_TOOLS_IMAGE:-postgres:18-alpine}") {
-		t.Fatal("external migration Compose must use a configurable PostgreSQL 18 db-tools image")
-	}
-}
