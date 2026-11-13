@@ -252,7 +252,7 @@ ensure_token() {
         "CANVAS_UPDATER_TOKEN=$token" \
         "CANVAS_UPDATER_GITHUB_TOKEN=$GITHUB_TOKEN" \
         "CANVAS_UPDATER_INSTALL_DIR=$INSTALL_DIR" \
-        "CANVAS_UPDATER_ENV_FILE=$INSTALL_DIR/.env" \
+        "CANVAS_UPDATER_ENV_FILE=.env" \
         "CANVAS_UPDATER_STATE_DIR=/var/lib/open-ai-canvas-updater" \
         "CANVAS_UPDATER_BACKUP_DIR=$INSTALL_DIR/backups" \
         "CANVAS_UPDATER_SOCKET=$SOCKET_DIR/updater.sock" \

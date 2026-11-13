@@ -146,6 +146,15 @@ func TestNewManagerDefaultsToSelfOpenImageRepository(t *testing.T) {
 	}
 }
 
+func TestEnvPathAcceptsAbsoluteEnvironmentFile(t *testing.T) {
+	installDir := t.TempDir()
+	envPath := filepath.Join(t.TempDir(), ".env")
+	manager := &Manager{config: Config{InstallDir: installDir, EnvFile: envPath}}
+	if got := manager.envPath(); got != envPath {
+		t.Fatalf("envPath=%q, want %q", got, envPath)
+	}
+}
+
 func TestNewManagerRejectsUnknownDatabaseMode(t *testing.T) {
 	_, err := NewManager(Config{DatabaseMode: DatabaseMode("shared")})
 	if err == nil {

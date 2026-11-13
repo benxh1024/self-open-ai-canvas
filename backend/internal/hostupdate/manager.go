@@ -618,7 +618,12 @@ func (m *Manager) usesSeparateMigrationCompose() bool {
 	}
 	return migrationComposeFile != m.config.ComposeFile
 }
-func (m *Manager) envPath() string { return filepath.Join(m.config.InstallDir, m.config.EnvFile) }
+func (m *Manager) envPath() string {
+	if filepath.IsAbs(m.config.EnvFile) {
+		return m.config.EnvFile
+	}
+	return filepath.Join(m.config.InstallDir, m.config.EnvFile)
+}
 func (m *Manager) previousComposePath() string {
 	return filepath.Join(m.config.StateDir, "previous-compose.yml")
 }
