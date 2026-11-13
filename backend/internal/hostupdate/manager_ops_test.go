@@ -125,7 +125,6 @@ func TestCurrentVersionRejectsLatest(t *testing.T) {
 	}
 }
 
-
 func TestNewManagerDefaultsToSelfOpenImageRepository(t *testing.T) {
 	root := t.TempDir()
 	manager, err := NewManager(Config{
@@ -316,4 +315,3 @@ func TestDeployComposeAgentVariablesFallbackForLegacyUpdater(t *testing.T) {
 		}
 	}
 }
-
