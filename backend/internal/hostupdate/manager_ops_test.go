@@ -141,6 +141,9 @@ func TestNewManagerDefaultsToSelfOpenImageRepository(t *testing.T) {
 	if manager.config.DatabaseMode != DatabaseModeManaged {
 		t.Fatalf("DatabaseMode=%q, want managed", manager.config.DatabaseMode)
 	}
+	if got, want := manager.config.BackupDir, filepath.Join(root, "backups"); got != want {
+		t.Fatalf("BackupDir=%q, want %q", got, want)
+	}
 }
 
 func TestNewManagerRejectsUnknownDatabaseMode(t *testing.T) {

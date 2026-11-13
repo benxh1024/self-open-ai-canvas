@@ -37,14 +37,17 @@ func run(ctx context.Context) error {
 		DatabaseMode:         hostupdate.DatabaseMode(env("CANVAS_UPDATER_DATABASE_MODE", string(hostupdate.DatabaseModeManaged))),
 		EnvFile:              env("CANVAS_UPDATER_ENV_FILE", ".env"),
 		StateDir:             env("CANVAS_UPDATER_STATE_DIR", "/var/lib/open-ai-canvas-updater"),
-		BackupDir:            env("CANVAS_UPDATER_BACKUP_DIR", "/opt/open-ai-canvas/backups"),
-		HealthURL:            strings.TrimSpace(os.Getenv("CANVAS_UPDATER_HEALTH_URL")),
-		GitHubToken:          strings.TrimSpace(os.Getenv("CANVAS_UPDATER_GITHUB_TOKEN")),
-		StableWindow:         envDuration("CANVAS_UPDATER_STABLE_WINDOW", 30*time.Second),
-		StepTimeout:          envDuration("CANVAS_UPDATER_STEP_TIMEOUT", 20*time.Minute),
-		BinaryPath:           env("CANVAS_UPDATER_BINARY_PATH", "/usr/local/bin/open-ai-canvas-host-updater"),
-		ServiceName:          env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
-		SelfUpdate:           envBool("CANVAS_UPDATER_SELF_UPDATE", true),
+		// Leave the fallback empty so hostupdate derives it from InstallDir.
+		// This keeps custom deployments such as /root/self-open-ai-canvas
+		// from silently writing backups under the historical /opt path.
+		BackupDir:    strings.TrimSpace(os.Getenv("CANVAS_UPDATER_BACKUP_DIR")),
+		HealthURL:    strings.TrimSpace(os.Getenv("CANVAS_UPDATER_HEALTH_URL")),
+		GitHubToken:  strings.TrimSpace(os.Getenv("CANVAS_UPDATER_GITHUB_TOKEN")),
+		StableWindow: envDuration("CANVAS_UPDATER_STABLE_WINDOW", 30*time.Second),
+		StepTimeout:  envDuration("CANVAS_UPDATER_STEP_TIMEOUT", 20*time.Minute),
+		BinaryPath:   env("CANVAS_UPDATER_BINARY_PATH", "/usr/local/bin/open-ai-canvas-host-updater"),
+		ServiceName:  env("CANVAS_UPDATER_SERVICE_NAME", "open-ai-canvas-updater.service"),
+		SelfUpdate:   envBool("CANVAS_UPDATER_SELF_UPDATE", true),
 	})
 	if err != nil {
 		return err

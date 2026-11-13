@@ -269,6 +269,8 @@ push v* tag / 手动触发
 
 推送 `v*` tag 时，发布 job 还会交叉编译 `open-ai-canvas-host-updater-linux-amd64` 和 `open-ai-canvas-host-updater-linux-arm64`，生成 `SHA256SUMS`，并把它们连同 `docker-compose.deploy.yml`、`docker-compose.external-services.yml` 和 `docker-compose.external-migrate.yml` 上传到 GitHub Release。
 
+Host Updater 的备份文件位于部署目录的 `backups/`（例如 `/root/self-open-ai-canvas/backups/`），状态文件位于 `/var/lib/open-ai-canvas-updater/state.json`。后台系统更新页面的当前版本读取部署目录 `.env` 中的 `CANVAS_IMAGE_TAG`；若页面显示“未识别”，先检查该键、`/etc/open-ai-canvas-updater.env` 中的 `CANVAS_UPDATER_INSTALL_DIR` / `CANVAS_UPDATER_ENV_FILE`，以及更新器服务日志。
+
 backend 镜像内部包含三个 Go 可执行文件：`yingce-backend`、`migrate-schema` 和 `migrate-sqlite-postgres`。前两个由长驻后端或一次性迁移容器使用；SQLite 到 PostgreSQL 迁移工具只由维护者在数据库迁移时手工调用。
 
 ## Agent 运行架构
