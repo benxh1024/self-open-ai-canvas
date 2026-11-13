@@ -57,7 +57,7 @@ jobs:
     # （Redis 租约、缓存白名单）。只跑 go test ./... 而不备齐这两样，这些路径永远不会被执行。
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18
         env:
           POSTGRES_PASSWORD: canvas_test
           POSTGRES_DB: canvas_test
