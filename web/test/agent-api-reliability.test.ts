@@ -28,6 +28,7 @@ writeFileSync(
     readFileSync(new URL("services/cloud-agent-conversations.ts", root), "utf8")
         .replace('"@/lib/localforage-storage"', JSON.stringify(storagePath))
         .replace('"@/lib/user-scope"', JSON.stringify(join(dir, "scope.ts")))
+        .replace('"@/lib/agent-page-context"', JSON.stringify(fileURLToPath(new URL("lib/agent-page-context.ts", root))))
         .replace('"@/lib/markdown-plain-text"', JSON.stringify(fileURLToPath(new URL("lib/markdown-plain-text.ts", root)))),
 );
 const conversations: typeof import("../src/services/cloud-agent-conversations") = await import(join(dir, "conversations.ts"));
@@ -163,10 +164,27 @@ describe("Agent SSE recovery", () => {
         let requests = 0;
         globalThis.fetch = (async (_url, init) => {
             requests++;
-            return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new Error("timeout")), { once: true }));
+            return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted", "AbortError")), { once: true }));
         }) as typeof fetch;
-        expect(await observe({ timeoutMs: 10 }).done).toBeInstanceOf(Error);
+        const result = observe({ timeoutMs: 10 });
+        expect(await result.done).toMatchObject({ name: "AbortError" });
         expect(requests).toBe(5);
+        expect(result.statuses.at(-1)).toBe("disconnected");
+    });
+
+    it("reconnects after a watchdog AbortError and receives the terminal run state", async () => {
+        let requests = 0;
+        globalThis.fetch = (async (_url, init) => {
+            requests++;
+            if (requests === 1) return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted", "AbortError")), { once: true }));
+            return stream(snapshot("completed"));
+        }) as typeof fetch;
+        const result = observe({ timeoutMs: 10 });
+        await expect(result.done).resolves.toBeUndefined();
+        expect(requests).toBe(2);
+        expect(result.statuses).toContain("reconnecting");
+        expect(result.statuses.at(-1)).toBe("connected");
+        expect(result.events.filter((item) => item.type === "run_status").map((item) => item.payload.status)).toEqual(["completed"]);
     });
 
     it("unsubscribe aborts the live reader without reporting a run failure", async () => {
@@ -198,7 +216,7 @@ describe("Agent admission replay and durable pending records", () => {
         const mutable = { ...input };
         transport.http.post = async (_path: string, body: unknown, options: unknown) => {
             bodies.push(structuredClone(body));
-            expect(options).toEqual({ timeout: 60_000 });
+            expect(options).toEqual({ timeout: 15_000 });
             mutable.model = "changed";
             if (bodies.length < 3) throw { retryable: true };
             return { run: { id: "accepted" } };

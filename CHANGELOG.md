@@ -1,4 +1,14 @@
 # CHANGELOG
+## v1.8.5.6
+- Agent 与 MCP 安全：MCP 连接改为逐用户授权和逐工具参数策略，加入独立私网出站白名单、调用/存储额度和持久回执保护；Agent 新增每账号进行中轮次及历史账本上限，浏览器账号切换会取消旧会话请求，防止晚到响应写入新账号。
+- Agent 运行时：独立 Agent 容器增加只读根文件系统、受限 `/tmp`、内存/CPU/PID/队列/日志上限和孤儿运行目录回收。受管部署与外部 PostgreSQL/Redis 部署均使用相同的 Agent、backend 资源和日志限制。
+- 登录与管理：新增微信网站应用登录、账号绑定和登录日志；新增 Cloudflare Turnstile 机器人保护配置。两项功能默认关闭，只有配置相应平台凭据后才启用。
+- 短剧与画布：新增分镜全屏制作工作区、项目资产核查、彩色引用、镜头精修入口及与小影按项目/集/镜头协作；参考图编号按实际模型请求顺序对齐，音频显示名自动去除最后一个扩展名。
+- 升级说明：数据库 Schema 从 101 升至 104。升级前备份数据库与数据目录中的配置密钥；受管部署通过 Host Updater 执行备份、迁移和健康检查，外部 PostgreSQL/Redis 部署须使用本 Release 附带的 `docker-compose.external-services.yml` 与 `docker-compose.external-migrate.yml` 完成迁移。
+- MCP 升级边界：Schema 103 会停用所有既有 MCP 连接，清除旧检测结果和工具授权，并保留加密凭据及历史执行回执。升级后必须重新检测、重新授权；平台连接还须指定允许用户和参数策略。可信内网 MCP 主机改用独立的 `CANVAS_MCP_ALLOWED_PRIVATE_HOSTS`，不再继承模型渠道私网白名单。
+- 部署容量：backend 和 yingce-agent 必须使用同一 Release。新 Compose 默认将 Agent 并发限制为 8，并施加 4 GiB 内存、2 CPU、256 PID 与 512 MiB 临时目录上限；宿主机容量足够并完成压测后，才调整 `.env` 中对应的 `YINGCE_AGENT_*` 与 `CANVAS_BACKEND_*` 参数并重新创建容器。
+- 回退边界：旧版本不能安全运行已升至 Schema 104 的数据库；回退应用版本时必须一并恢复升级前的数据库和数据目录备份。
+
 ## v1.8.5.5
 - 升级备份目录
 ## v1.8.5.4
