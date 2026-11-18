@@ -5,6 +5,16 @@ description: 影策后端核心持久化表与状态边界
 
 # 后端数据库
 
+## 对白同步与提示词核对
+
+沿用现有字段，无新增表或 Schema 迁移。`drama_segments.prompt_status` 新增 `conflict`（镜头已保存但无法安全同步，保留两份正文）及 `review`（AI 新稿生成后保留原手写稿，等待采用）。原因保存在 `prompt_error`。两种状态均不计为提示词就绪，不允许提交视频；显式确认正文后恢复。只修改对白时按唯一引语局部更新 `video_prompt_override`，没有手写稿时更新 `video_prompt`，同时递增修订号使迟到作业失效。
+
+## 图片用量计费（Schema 105）
+
+版本 105 `image_usage_billing` 增加可空 JSON 文本列：`channel_model_price_tiers.image_pricing`、`cost_image_pricing`，`logical_models.image_pricing`，以及 `billing_orders.image_pricing`、`cost_image_pricing`、`image_usage`。订单另有 `image_input_images` 和 `image_max_output_images`，均为非空整数、默认 0。售价与内部成本分别保存，成本字段不向用户端序列化。
+
+迁移只添加缺少的列，支持重复执行；历史订单的图片 JSON 保持空值，不反推或重算费用。实际用量在下载前持久化，结算和退款沿用订单状态条件、余额校验和账本事务。规则和 API 合同见[图片用量计费](/docs/backend/image-usage-billing)。
+
 ## 微信登录（Schema 102）
 
 版本 102 `wechat_oauth` 为 `o_auth_states` 增加 `purpose`（登录、绑定、重新核验用途）、`client_id`（发起时的网站应用 AppID）和 `profile_json`（首次微信注册的临时昵称、头像及身份标识）。旧状态的这些字段为空，不改变 Linux.do 与 OIDC 的处理。
@@ -23,7 +33,7 @@ description: 影策后端核心持久化表与状态边界
 | `mcp_connections.allowed_user_ids_json` / `tool_policies_json` | 平台管理配置快照；每工具独立对象 JSON Schema 与远端输入 schema 同时校验；策略变更递增连接 revision |
 | `mcp_connections.tools_summary_json` | 有界工具摘要，列表查询不载入完整 `tools_json`；完整发现结果 schema 合计不超过 256 KiB |
 | `mcp_storage_usages` | 每用户 64 MiB 的 MCP 配置、凭据密文、工具快照和回执预算；包含有界元数据预留，调用领取回执前预留最多 48 KiB 结果空间 |
-| `agent_storage_usages` | 每用户 256 MiB 的状态、原生 JSONL、事件、消息及画布撤销正文账本；首次写入测量旧数据，此后在同一事务内按增量更新 |
+| `agent_storage_usages` | 每用户的状态、原生 JSONL、事件、消息及画布撤销正文账本；首次写入测量旧数据。上限取自运行时策略 `resource.agentHistoryMB`（默认 256 MiB），写入和管理员清理均在同一事务内更新账本，无需迁移 |
 | `mcp_tool_executions.status = expired` | 维护裁剪回执正文后保留身份和指纹，不再次执行外部操作；正在执行的回执不裁剪 |
 
 升级 103 会**停用全部旧 MCP 连接，包括个人连接**，清空检测结果、工具授权、平台用户名单和工具策略并递增 revision；保留加密凭据和执行回执，并为既有 MCP 数据初始化预算。用户须重新检测和授权；平台连接还须明确授权用户及参数范围。104 不删除既有 Agent 历史，超过额度的账号只能缩减或停止，不能继续增长历史。
@@ -31,6 +41,12 @@ description: 影策后端核心持久化表与状态边界
 Agent 根任务准入按用户在同一数据库事务计数；PostgreSQL 使用用户 advisory lock，SQLite 先取写锁。统计包含未创建执行检查点的预留、`waiting_approval` / `waiting_user` 和 `cleanup_pending`，不依赖任务载体是否为 `text_replay`。存储账本先于执行行加锁；原生会话仍采用 revision CAS，超额写入整笔回滚。取消、失败标记和无正文增长的清理不需要新增历史空间。
 
 账本用于业务容量控制，不等于数据库物理文件大小。索引、WAL、备份、系统模板与数据库页空闲空间仍需部署监控。当前不自动删除用户历史；人工归档必须通过保持账本与幂等标记一致的维护事务，不能直接清空 MCP 执行表。升级前备份数据库和 `.settings-key`，回滚时恢复同一份备份，旧二进制不能直接使用 104 结构。
+
+## 官方素材扩展
+
+官方素材使用独立的 `yingce_schema_migrations` 四步扩展链，保留主线迁移版本与校验值。表包括 `official_assets`、`official_asset_imports` 和 `official_asset_recommendations`。角色快照及推荐授权版本、时间保存在扩展字段中。项目现有 `migrate-schema` 命令执行迁移，启动检查同时要求主线与扩展链完整。
+
+官方媒体由画布引用共享资源，不自动复制到个人库。推荐和官方快照参与资源保留检查。下架后的已有引用按用户、画布及服务端保存记录判断权限。升级前备份数据库与媒体；回滚使用匹配版本及备份，不直接删除迁移记录或共享资源。
 
 ## 创作对话同步（Schema 101）
 
@@ -368,7 +384,7 @@ SQLite 写事务与 PostgreSQL 行锁串行化同一对话的修订检查；读�
 | `drama_casts` | 全剧设定：角色（`kind=character`，含别名、外貌与声线 `voice_instructions`）、关键道具（`kind=prop`）和场景（`kind=scene`），当前参考图 `image_resource_id` 与状态 | 作品圣经建档；剧本里首次出现的人物、道具或地点即时建档，按标准名与别名归并；锁定后不再重新生成 |
 | `drama_episodes` | 集标题、大纲、钩子、悬念、素材类型 `source_format`（Schema 73）、阶段（queued → script → prompts → review → video → render → done）、`approved`（逐集确认模式下已确认本集提示词）、`media_released`、错误、成片资源、`final_stale`、`revision` | `(project_id, number)` 唯一；用户修改递增 `revision`，调度写入以 `revision` 为条件 |
 | `drama_shots` | 镜头脚本：剧情段 `segment_index` / `segment_title`、场景与场景设定 `scene_cast_id`、出场角色 `cast_ids_json`、关键道具 `prop_ids_json`、说话人、台词、动作、景别、运镜、转场 `transition`、时长、起幅画面 `image_prompt`、运动描述 `video_prompt`、原文出处 | 镜头只是撰写段提示词的素材，不产出媒体；修改后所在段的提示词与视频标记过期 |
-| `drama_segments` | 剧情段：模型撰写的完整视频提示词 `video_prompt`、撰写状态 `prompt_status`（空串待撰写、`running`、`ready`、`stale`、`failed`）与 `prompt_error`、撰写时的秒数 `prompt_seconds`、用户改写 `video_prompt_override`、按段视频模型 `video_model_json`、用户指定的参考图 `reference_cast_ids_json`（Schema 74）、视频状态 `video_status`、`video_resource_id`、`video_seconds`、`video_error`、本段视频最后一帧 `tail_frame_resource_id`、`revision` | `(episode_id, segment_index)` 唯一；剧本写入时建行，重新改编时重建；结果按 `revision` 条件写入，过期结果作废；某段视频变化会让后续已生成的段过期（它们承接的是旧最后一帧） |
+| `drama_segments` | 剧情段：模型撰写的完整视频提示词 `video_prompt`、撰写状态 `prompt_status`（空串待撰写、`running`、`ready`、`stale`、`conflict`、`review`、`failed`）与 `prompt_error`、撰写时的秒数 `prompt_seconds`、用户改写 `video_prompt_override`、按段视频模型 `video_model_json`、用户指定的参考图 `reference_cast_ids_json`（Schema 74）、视频状态 `video_status`、`video_resource_id`、`video_seconds`、`video_error`、本段视频最后一帧 `tail_frame_resource_id`、`revision` | `(episode_id, segment_index)` 唯一；剧本写入时建行，重新改编时重建；结果按 `revision` 条件写入，过期结果作废；某段视频变化会让后续已生成的段过期（它们承接的是旧最后一帧） |
 | `drama_takes` | 历史版本：设定参考图（`cast`）、剧情段视频（`video`，`owner_id` 为段 ID）与单集成片（`final`） | `(owner_id, kind)` 内递增 `version`；版本始终入库 |
 | `drama_jobs` | 调度队列：类型（bible/plan/cast_image/script/segment_prompt/segment_video/render）、目标、优先级、关联任务、重试次数、历次提交 `attempts_json`、错误、实际花费 | 任务在派发时才创建；`segment_prompt` / `segment_video` 的 `shot_id` 存放 `drama_segments.id` |
 
